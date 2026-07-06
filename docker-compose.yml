@@ -11,7 +11,7 @@ services:
       - ./database/init:/docker-entrypoint-initdb.d
     restart: unless-stopped
     networks:
-      - default
+      - nextcloud_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-karaoke_admin} -d ${DB_NAME:-karaoke_db}"]
       interval: 10s
@@ -38,7 +38,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - default
+      - nextcloud_net
 
   karaoke_frontend:
     build:
@@ -52,11 +52,9 @@ services:
       - karaoke_backend
     restart: unless-stopped
     networks:
-      - default
       - nextcloud_net
 
 networks:
-  default:
   nextcloud_net:
     external: true
     name: nextcloud_net

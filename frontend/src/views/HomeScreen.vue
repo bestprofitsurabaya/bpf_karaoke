@@ -105,7 +105,7 @@
 
     <!-- Footer -->
     <footer class="home-footer">
-      <p>© 2024 BPF Karaoke System. All rights reserved.</p>
+      <p>© 2026 IT BPF Surabaya - PT BESTPROFIT FUTURES SURABAYA. All rights reserved.</p>
       <p class="footer-sub">Powered by Vue 3 + FastAPI + Socket.IO</p>
     </footer>
   </div>

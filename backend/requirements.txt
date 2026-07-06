@@ -7,13 +7,8 @@ asyncpg>=0.28.0
 python-jose[cryptography]>=3.3.0
 python-socketio>=5.9.0
 python-engineio>=4.7.0
-
-# AI/ML Libraries
-scikit-learn==1.5.0
-numpy==1.26.4
-pandas==2.2.2
-fuzzywuzzy==0.18.0
-python-Levenshtein==0.25.1
-librosa==0.10.2
-soundfile==0.12.1
-joblib==1.4.2
+numpy>=1.24.0
+scipy>=1.10.0
+librosa>=0.10.0
+scikit-learn>=1.2.0
+httpx>=0.24.0

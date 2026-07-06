@@ -1,5 +1,6 @@
 """
-BPF Karaoke System - Backend API v2.0 (Fixed)
+BPF Karaoke System - Backend API v3.0 (Production)
+Developed by IT BPF Surabaya - PT BESTPROFIT FUTURES SURABAYA
 """
 import asyncio, os, json, hashlib, secrets
 from datetime import datetime, timedelta
@@ -64,7 +65,7 @@ class QueueItem(Base):
     __tablename__ = "queue"
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     song_id = mapped_column(Integer, ForeignKey("songs.id", ondelete="CASCADE"), nullable=False)
-    room_id = mapped_column(String(50), nullable=False, index=True)
+    room_id = mapped_column(String(100), nullable=False, default="KARAOKE BPF SBY", index=True)
     requester_name = mapped_column(String(100), nullable=True)
     status = mapped_column(String(20), default="waiting")
     priority = mapped_column(Integer, default=0)
@@ -85,6 +86,11 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+class SongUpdate(BaseModel):
+    title: str
+    artist: Optional[str] = None
+    genre: Optional[str] = None
+
 def get_password_hash(password: str) -> str:
     salt = secrets.token_hex(16)
     h = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
@@ -102,7 +108,7 @@ def create_access_token(data: dict, exp: Optional[timedelta] = None) -> str:
     d["exp"] = datetime.utcnow() + (exp or timedelta(minutes=settings.jwt_expiration))
     return jwt.encode(d, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
-app = FastAPI(title="BPF Karaoke", version="2.0.0")
+app = FastAPI(title="BPF Karaoke", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 mp = Path(settings.media_path)
@@ -114,7 +120,7 @@ active: Dict[str, Any] = {}
 
 @sio.event
 async def connect(sid, environ):
-    active[sid] = {"sid": sid, "type": "unknown", "room": "default"}
+    active[sid] = {"sid": sid, "type": "unknown", "room": "KARAOKE BPF SBY"}
 
 @sio.event
 async def disconnect(sid):
@@ -122,47 +128,58 @@ async def disconnect(sid):
 
 @sio.event
 async def register(sid, data):
+    room = data.get("room_id", "KARAOKE BPF SBY")
     if sid in active:
-        active[sid].update({"type": data.get("type", "unknown"), "room": data.get("room_id", "default")})
-    await sio.emit("ok", {"type": data.get("type")}, to=sid)
+        active[sid].update({"type": data.get("type", "unknown"), "room": room})
+    await sio.enter_room(sid, room)
+    await sio.emit("ok", {"type": data.get("type"), "room_id": room}, to=sid)
 
 @sio.event
 async def play_song(sid, data):
-    sid_q, rid = data.get("queue_id"), data.get("room_id", "default")
+    sid_q = data.get("queue_id")
+    room = data.get("room_id", "KARAOKE BPF SBY")
     async with async_session() as s:
         if sid_q:
             await s.execute(update(QueueItem).where(QueueItem.id == sid_q).values(status="playing", played_at=datetime.utcnow()))
         await s.execute(update(Song).where(Song.id == data.get("song_id")).values(play_count=Song.play_count + 1))
         await s.commit()
-    await sio.emit("play", {"song_id": data.get("song_id"), "queue_id": sid_q})
+    await sio.emit("play", {"song_id": data.get("song_id"), "queue_id": sid_q}, room=room)
+    await sio.emit("queue_updated", {"room_id": room}, room=room)
 
 @sio.event
 async def pause_song(sid, data):
-    await sio.emit("ctrl", {"action": "pause"})
+    room = data.get("room_id", "KARAOKE BPF SBY")
+    await sio.emit("ctrl", {"action": "pause"}, room=room)
 
 @sio.event
 async def resume_song(sid, data):
-    await sio.emit("ctrl", {"action": "resume"})
+    room = data.get("room_id", "KARAOKE BPF SBY")
+    await sio.emit("ctrl", {"action": "resume"}, room=room)
 
 @sio.event
 async def skip_song(sid, data):
+    room = data.get("room_id", "KARAOKE BPF SBY")
     async with async_session() as s:
         if data.get("queue_id"):
             await s.execute(update(QueueItem).where(QueueItem.id == data["queue_id"]).values(status="skipped", completed_at=datetime.utcnow()))
             await s.commit()
-    await sio.emit("ctrl", {"action": "skip"})
+    await sio.emit("ctrl", {"action": "skip"}, room=room)
+    await sio.emit("queue_updated", {"room_id": room}, room=room)
 
 @sio.event
 async def set_volume(sid, data):
-    await sio.emit("vol", {"volume": data.get("volume", 80)})
+    room = data.get("room_id", "KARAOKE BPF SBY")
+    await sio.emit("vol", {"volume": data.get("volume", 80)}, room=room)
 
 @sio.event
 async def join_room(sid, data):
-    sio.enter_room(sid, f"{data.get('type','operator')}-{data.get('room_id','default')}")
+    room = data.get("room_id", "KARAOKE BPF SBY")
+    await sio.enter_room(sid, room)
 
 @sio.event
 async def toggle_vocal(sid, data):
-    await sio.emit("vocal", {"channel": data.get("channel", "stereo")})
+    room = data.get("room_id", "KARAOKE BPF SBY")
+    await sio.emit("vocal", {"channel": data.get("channel", "stereo")}, room=room)
 
 socket_app = socketio.ASGIApp(sio, app)
 
@@ -192,25 +209,40 @@ async def login(req: LoginRequest, db=Depends(get_db)):
 
 @app.get("/api/songs")
 async def get_songs(search: Optional[str] = Query(None), genre: Optional[str] = Query(None),
-                    limit: int = Query(50, le=200), offset: int = Query(0), db=Depends(get_db)):
+                    limit: int = Query(250), offset: int = Query(0), db=Depends(get_db)):
     q = select(Song).where(Song.is_active == True)
     if search: q = q.where(or_(Song.title.ilike(f"%{search}%"), Song.artist.ilike(f"%{search}%")))
     if genre: q = q.where(Song.genre == genre)
     r = await db.execute(q.order_by(Song.title).offset(offset).limit(limit))
     return r.scalars().all()
 
+@app.put("/api/songs/{song_id}")
+async def update_song(song_id: int, req: SongUpdate, db=Depends(get_db)):
+    r = await db.execute(select(Song).where(Song.id == song_id, Song.is_active == True))
+    song = r.scalar_one_or_none()
+    if not song: raise HTTPException(404, "Lagu tidak ditemukan")
+    song.title = req.title
+    song.artist = req.artist
+    song.genre = req.genre
+    await db.commit()
+    return {"ok": True}
+
+@app.delete("/api/songs/{song_id}")
+async def delete_song(song_id: int, db=Depends(get_db)):
+    r = await db.execute(select(Song).where(Song.id == song_id))
+    song = r.scalar_one_or_none()
+    if not song: raise HTTPException(404, "Lagu tidak ditemukan")
+    song.is_active = False
+    await db.commit()
+    return {"ok": True}
+
 @app.get("/api/songs/genres")
 async def genres(db=Depends(get_db)):
     r = await db.execute(select(Song.genre, func.count(Song.id)).where(Song.is_active == True, Song.genre.isnot(None)).group_by(Song.genre).order_by(func.count(Song.id).desc()))
     return [{"genre": row[0], "count": row[1]} for row in r]
 
-@app.get("/api/songs/popular")
-async def popular(limit: int = Query(20, le=100), db=Depends(get_db)):
-    r = await db.execute(select(Song).where(Song.is_active == True).order_by(Song.play_count.desc()).limit(limit))
-    return r.scalars().all()
-
 class QR(BaseModel):
-    song_id: int; room_id: str = "default"; requester_name: Optional[str] = None
+    song_id: int; room_id: str = "KARAOKE BPF SBY"; requester_name: Optional[str] = None
 
 class QResp(BaseModel):
     id: int; song_id: int; room_id: str; status: str; priority: int; created_at: datetime; song: Optional[SR] = None
@@ -222,11 +254,12 @@ async def add_queue(req: QR, db=Depends(get_db)):
     if not sg: raise HTTPException(404, "Song not found")
     qi = QueueItem(song_id=req.song_id, room_id=req.room_id, requester_name=req.requester_name)
     db.add(qi); await db.commit(); await db.refresh(qi)
+    await sio.emit("queue_updated", {"room_id": req.room_id}, room=req.room_id)
     return QResp(id=qi.id, song_id=qi.song_id, room_id=qi.room_id, status=qi.status, priority=qi.priority, created_at=qi.created_at, song=SR.model_validate(sg))
 
 @app.get("/api/queue/{room_id}")
-async def get_queue(room_id: str = "default", db=Depends(get_db)):
-    items = (await db.execute(select(QueueItem).where(QueueItem.room_id == room_id).order_by(QueueItem.created_at))).scalars().all()
+async def get_queue(room_id: str = "KARAOKE BPF SBY", db=Depends(get_db)):
+    items = (await db.execute(select(QueueItem).where(QueueItem.room_id == room_id, QueueItem.status == "waiting").order_by(QueueItem.created_at))).scalars().all()
     out = []
     for i in items:
         sg = (await db.execute(select(Song).where(Song.id == i.song_id))).scalar_one_or_none()
@@ -234,10 +267,11 @@ async def get_queue(room_id: str = "default", db=Depends(get_db)):
     return out
 
 @app.delete("/api/queue/{queue_id}")
-async def del_queue(queue_id: int, room_id: str = Query("default"), db=Depends(get_db)):
+async def del_queue(queue_id: int, room_id: str = Query("KARAOKE BPF SBY"), db=Depends(get_db)):
     r = await db.execute(update(QueueItem).where(QueueItem.id == queue_id, QueueItem.room_id == room_id).values(status="skipped", completed_at=datetime.utcnow()))
     if r.rowcount == 0: raise HTTPException(404, "Not found")
     await db.commit()
+    await sio.emit("queue_updated", {"room_id": room_id}, room=room_id)
     return {"ok": True}
 
 @app.post("/api/admin/songs/scan")
@@ -248,7 +282,25 @@ async def scan(path: Optional[str] = Query(None), db=Depends(get_db)):
     n = 0
     for f in sp.rglob("*"):
         if f.suffix.lower() not in ext: continue
-        if (await db.execute(select(Song).where(Song.file_path == str(f)))).scalar_one_or_none(): continue
+                # Cek apakah lagu sudah ada di database (aktif maupun nonaktif)
+        existing_song_stmt = await db.execute(select(Song).where(Song.file_path == str(f)))
+        existing_song = existing_song_stmt.scalar_one_or_none()
+        
+        nm = f.stem; art = "Unknown"; tit = nm
+        if " - " in nm: 
+            p = nm.split(" - ", 1)
+            art = p[0].strip()
+            tit = p[1].strip()
+
+        if existing_song:
+            if not existing_song.is_active:
+                # KASUS: Lagu pernah dihapus, diupload ulang dengan nama sama. Aktifkan kembali!
+                existing_song.is_active = True
+                existing_song.title = tit
+                existing_song.artist = art
+                existing_song.updated_at = datetime.utcnow()
+                n += 1
+            continue
         nm = f.stem; art = None; tit = nm
         if " - " in nm: p = nm.split(" - ", 1); art = p[0].strip(); tit = p[1].strip()
         db.add(Song(title=tit, artist=art, file_path=str(f), file_format=f.suffix.lower().replace(".", ""), is_active=True))
@@ -268,7 +320,6 @@ async def stats(db=Depends(get_db)):
 async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
     async with async_session() as session:
         for user_data in [
             {"username": settings.admin_user, "password_hash": get_password_hash(settings.admin_password), "role": "admin", "is_active": True},
