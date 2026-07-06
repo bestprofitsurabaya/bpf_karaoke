@@ -1,42 +1,34 @@
 services:
-  # =============================================
-  # DATABASE - PostgreSQL 16 Alpine
-  # =============================================
   karaoke_db:
     image: postgres:16-alpine
     container_name: karaoke_db
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
-    ports:
-      - "127.0.0.1:5433:5432"
+      POSTGRES_USER: ${DB_USER:-karaoke_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-K4r40k3S3cur3P4ss!2024}
+      POSTGRES_DB: ${DB_NAME:-karaoke_db}
     volumes:
       - ./database/data:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d
     restart: unless-stopped
     networks:
-      - karaoke_network
+      - default
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-karaoke_admin} -d ${DB_NAME:-karaoke_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # =============================================
-  # BACKEND - Python FastAPI + Socket.IO
-  # =============================================
   karaoke_backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: karaoke_backend
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
-      JWT_SECRET: ${JWT_SECRET}
-      ADMIN_USER: ${ADMIN_USER}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      MEDIA_PATH: ${MEDIA_PATH}
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-karaoke_admin}:${DB_PASSWORD:-K4r40k3S3cur3P4ss!2024}@karaoke_db:5432/${DB_NAME:-karaoke_db}
+      JWT_SECRET: ${JWT_SECRET:-K4r40k3JWTS3cr3tK3yV3ryL0ngStr1ng2024!@#$}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminK4r40k3!2024}
+      MEDIA_PATH: /media/lagu
       CORS_ORIGINS: "*"
     volumes:
       - ./media/lagu:/media/lagu:ro
@@ -46,13 +38,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - karaoke_network
-    ports:
-      - "127.0.0.1:5002:5000"
+      - default
 
-  # =============================================
-  # FRONTEND - Vue 3 PWA dengan Nginx
-  # =============================================
   karaoke_frontend:
     build:
       context: ./frontend
@@ -65,10 +52,11 @@ services:
       - karaoke_backend
     restart: unless-stopped
     networks:
-      - karaoke_network
-    ports:
-      - "127.0.0.1:3001:80"
+      - default
+      - nextcloud_net
 
 networks:
-  karaoke_network:
-    driver: bridge
+  default:
+  nextcloud_net:
+    external: true
+    name: nextcloud_net

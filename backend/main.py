@@ -1,5 +1,5 @@
 """
-BPF Karaoke System - Backend API v2.0
+BPF Karaoke System - Backend API v2.0 (Fixed)
 """
 import asyncio, os, json, hashlib, secrets
 from datetime import datetime, timedelta
@@ -21,10 +21,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from jose import jwt
 import socketio
 
-# ============================================
-# CONFIGURATION
-# ============================================
-
 class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://karaoke_admin:K4r40k3S3cur3P4ss!2024@karaoke_db:5432/karaoke_db"
     jwt_secret: str = "K4r40k3JWTS3cr3tK3yV3ryL0ngStr1ng2024!@#$"
@@ -38,10 +34,6 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
-
-# ============================================
-# DATABASE
-# ============================================
 
 engine = create_async_engine(settings.database_url, echo=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -89,9 +81,9 @@ class User(Base):
     is_active = mapped_column(Boolean, default=True)
     created_at = mapped_column(DateTime, default=datetime.utcnow)
 
-# ============================================
-# SECURITY (SHA256 + Salt, NO bcrypt dependency)
-# ============================================
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 def get_password_hash(password: str) -> str:
     salt = secrets.token_hex(16)
@@ -109,10 +101,6 @@ def create_access_token(data: dict, exp: Optional[timedelta] = None) -> str:
     d = data.copy()
     d["exp"] = datetime.utcnow() + (exp or timedelta(minutes=settings.jwt_expiration))
     return jwt.encode(d, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-
-# ============================================
-# FASTAPI + SOCKET.IO
-# ============================================
 
 app = FastAPI(title="BPF Karaoke", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -178,20 +166,12 @@ async def toggle_vocal(sid, data):
 
 socket_app = socketio.ASGIApp(sio, app)
 
-# ============================================
-# DB DEPENDENCY
-# ============================================
-
 async def get_db():
     async with async_session() as s:
         try:
             yield s
         finally:
             await s.close()
-
-# ============================================
-# API
-# ============================================
 
 class SR(BaseModel):
     id: int; title: str; artist: Optional[str] = None; genre: Optional[str] = None
@@ -203,11 +183,11 @@ async def health():
     return {"status": "ok", "conns": len(active), "ts": datetime.utcnow().isoformat()}
 
 @app.post("/api/auth/login")
-async def login(req: BaseModel, db=Depends(get_db)):
+async def login(req: LoginRequest, db=Depends(get_db)):
     r = await db.execute(select(User).where(User.username == req.username, User.is_active == True))
     u = r.scalar_one_or_none()
     if not u or not verify_password(req.password, u.password_hash):
-        raise HTTPException(401, "Invalid")
+        raise HTTPException(401, "Invalid credentials")
     return {"access_token": create_access_token({"sub": u.username, "role": u.role}), "user": {"username": u.username, "role": u.role}}
 
 @app.get("/api/songs")
@@ -284,17 +264,12 @@ async def stats(db=Depends(get_db)):
     qt = (await db.execute(select(func.count(QueueItem.id)).where(func.date(QueueItem.created_at) == tdy))).scalar() or 0
     return {"total_songs": ts, "total_plays": int(tp), "queue_today": qt, "active_connections": len(active), "timestamp": datetime.utcnow().isoformat()}
 
-# ============================================
-# STARTUP - Gunakan INSERT ... ON CONFLICT
-# ============================================
-
 @app.on_event("startup")
 async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     async with async_session() as session:
-        # Gunakan PostgreSQL ON CONFLICT untuk menghindari duplicate error
         for user_data in [
             {"username": settings.admin_user, "password_hash": get_password_hash(settings.admin_password), "role": "admin", "is_active": True},
             {"username": "operator", "password_hash": get_password_hash("operator123"), "role": "operator", "is_active": True}
@@ -302,9 +277,4 @@ async def startup():
             stmt = pg_insert(User).values(**user_data).on_conflict_do_nothing(index_elements=["username"])
             await session.execute(stmt)
         await session.commit()
-
-    print("=" * 50)
     print("  BPF KARAOKE BACKEND READY!")
-    print(f"  http://0.0.0.0:5000/docs")
-    print("=" * 50)
-
