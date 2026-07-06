@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.pyc
+__pycache__/
+.env
+database/data/
+media/lagu/*
+!media/lagu/.gitkeep
+backend/uploads/*
+!backend/uploads/.gitkeep
+*.log
+.DS_Store

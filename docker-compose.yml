@@ -1,0 +1,74 @@
+services:
+  # =============================================
+  # DATABASE - PostgreSQL 16 Alpine
+  # =============================================
+  karaoke_db:
+    image: postgres:16-alpine
+    container_name: karaoke_db
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ./database/data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    networks:
+      - karaoke_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =============================================
+  # BACKEND - Python FastAPI + Socket.IO
+  # =============================================
+  karaoke_backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: karaoke_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      MEDIA_PATH: ${MEDIA_PATH}
+      CORS_ORIGINS: "*"
+    volumes:
+      - ./media/lagu:/media/lagu:ro
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      karaoke_db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - karaoke_network
+    ports:
+      - "127.0.0.1:5002:5000"
+
+  # =============================================
+  # FRONTEND - Vue 3 PWA dengan Nginx
+  # =============================================
+  karaoke_frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: karaoke_frontend
+    environment:
+      VITE_API_URL: https://nasbpfsby.duckdns.org:8443
+      VITE_WS_URL: wss://nasbpfsby.duckdns.org:8443
+    depends_on:
+      - karaoke_backend
+    restart: unless-stopped
+    networks:
+      - karaoke_network
+    ports:
+      - "127.0.0.1:3001:80"
+
+networks:
+  karaoke_network:
+    driver: bridge
