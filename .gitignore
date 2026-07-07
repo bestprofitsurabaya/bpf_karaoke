@@ -27,11 +27,10 @@ dist/
 docker-compose.override.yml
 docker-compose.minio-patch.yml
 
-# Database (contains sensitive data)
+# Database
 database/data/
-*.sql
 
-# Media files (large files)
+# Media files
 media/lagu/*
 media/transcoded/*
 !media/lagu/.gitkeep
@@ -65,11 +64,12 @@ ssl/
 *.key
 *.crt
 
-# Backup
+# Backup & Temp
 *.backup
 *.bak
-main.py.backup
+main.py.backup*
 main_patched_scan.py
+/tmp/*
 
 # OS
 Thumbs.db
@@ -80,6 +80,3 @@ Desktop.ini
 backend/models/
 *.pkl
 *.joblib
-
-# Test files
-media/lagu/test_video.mpg

@@ -8,23 +8,18 @@ module.exports = defineConfig({
     vue(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icons/*.png'],
+      includeAssets: ['icons/icon-512x512.png', 'icons/icon-192x192.png'],
       manifest: {
         name: 'BPF Karaoke System',
         short_name: 'BPF Karaoke',
-        description: 'Sistem Karaoke Modern dengan Remote Control',
-        theme_color: '#0f172a',
-        background_color: '#0f172a',
+        description: 'Best Profit Futures Karaoke Entertainment System',
+        theme_color: '#ef4444',
+        background_color: '#ffffff',
         display: 'standalone',
         orientation: 'landscape',
         start_url: '/?source=pwa',
         scope: '/',
         icons: [
-          {
-            src: '/icons/icon-192x192.png',
-            sizes: '192x192',
-            type: 'image/png'
-          },
           {
             src: '/icons/icon-512x512.png',
             sizes: '512x512',
@@ -41,10 +36,7 @@ module.exports = defineConfig({
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',
-              expiration: {
-                maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24
-              }
+              expiration: { maxEntries: 100, maxAgeSeconds: 86400 }
             }
           }
         ]
@@ -59,19 +51,9 @@ module.exports = defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': {
-        target: 'http://localhost:5002',
-        changeOrigin: true
-      },
-      '/socket.io': {
-        target: 'http://localhost:5002',
-        ws: true,
-        changeOrigin: true
-      },
-      '/media': {
-        target: 'http://localhost:5002',
-        changeOrigin: true
-      }
+      '/api': { target: 'http://localhost:5002', changeOrigin: true },
+      '/socket.io': { target: 'http://localhost:5002', ws: true, changeOrigin: true },
+      '/media': { target: 'http://localhost:5002', changeOrigin: true }
     }
   }
 })

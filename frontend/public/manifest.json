@@ -1,0 +1,25 @@
+{
+  "name": "BPF Karaoke System",
+  "short_name": "BPF Karaoke",
+  "description": "Sistem Karaoke Modern dengan AI & Remote Control",
+  "theme_color": "#ef4444",
+  "background_color": "#ffffff",
+  "display": "standalone",
+  "orientation": "landscape",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
