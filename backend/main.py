@@ -329,3 +329,60 @@ async def startup():
             await session.execute(stmt)
         await session.commit()
     print("  BPF KARAOKE BACKEND READY!")
+
+# ============================================
+# MINIO ENDPOINTS (Admin Only)
+# ============================================
+
+@app.get("/api/admin/minio/stats")
+async def get_minio_stats():
+    """Get MinIO storage statistics"""
+    try:
+        from services.minio_client import minio_client
+        stats = minio_client.get_stats()
+        return stats
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+@app.get("/api/admin/minio/objects")
+async def list_minio_objects(prefix: str = "karaoke/"):
+    """List objects in MinIO bucket"""
+    try:
+        from services.minio_client import minio_client
+        objects = minio_client.list_objects(prefix)
+        return {"objects": objects, "total": len(objects)}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/admin/transcode/scan")
+async def trigger_media_scan():
+    """Trigger manual media scan for transcoding"""
+    try:
+        from celery_tasks import scan_for_new_media
+        result = scan_for_new_media.delay()
+        return {"message": "Scan started", "task_id": result.id}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/admin/transcode/status")
+async def get_transcode_status():
+    """Get transcoding status"""
+    try:
+        from celery_tasks import TRANSCODED_PATH
+        if not TRANSCODED_PATH.exists():
+            return {"transcoded_files": 0, "files": []}
+        
+        files = []
+        for f in TRANSCODED_PATH.glob('*.mp4'):
+            files.append({
+                "name": f.name,
+                "size_mb": round(f.stat().st_size / 1024 / 1024, 2),
+                "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+            })
+        
+        return {
+            "transcoded_files": len(files),
+            "files": sorted(files, key=lambda x: x['modified'], reverse=True)[:20]
+        }
+    except Exception as e:
+        return {"error": str(e)}

@@ -12,3 +12,16 @@ scipy>=1.10.0
 librosa>=0.10.0
 scikit-learn>=1.2.0
 httpx>=0.24.0
+
+# Celery & Redis
+celery[redis]==5.4.0
+redis==5.0.8
+
+# MinIO Client
+minio==7.2.7
+
+# FFmpeg Python binding
+ffmpeg-python==0.2.0
+
+# Video processing
+opencv-python-headless==4.10.0.84
