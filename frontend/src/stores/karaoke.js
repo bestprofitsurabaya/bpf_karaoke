@@ -15,7 +15,7 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   const selectedGenre = ref(null)
   const selectedLanguage = ref(null)
   const screenType = ref('operator')
-  const roomId = ref('default')
+  const roomId = ref(localStorage.getItem('karaoke_room') || 'Room 1')
   const isDarkMode = ref(true)
   const socket = ref(null)
   const isConnected = ref(false)
@@ -24,6 +24,7 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   const stats = ref({})
   const token = ref(localStorage.getItem('auth_token') || '')
   const error = ref(null)
+  const availableRooms = ref([])
 
   // Getters
   const filteredSongs = computed(() => {
@@ -36,7 +37,6 @@ export const useKaraokeStore = defineStore('karaoke', () => {
       )
     }
     if (selectedGenre.value) result = result.filter(song => song.genre === selectedGenre.value)
-    if (selectedLanguage.value) result = result.filter(song => song.language === selectedLanguage.value)
     return result
   })
 
@@ -45,7 +45,11 @@ export const useKaraokeStore = defineStore('karaoke', () => {
 
   // Actions
   function setScreenType(type) { screenType.value = type }
-  function setRoomId(id) { roomId.value = id }
+  
+  function setRoomId(id) { 
+    roomId.value = id
+    localStorage.setItem('karaoke_room', id)
+  }
 
   function connectSocket() {
     const wsUrl = window.location.origin
@@ -63,16 +67,8 @@ export const useKaraokeStore = defineStore('karaoke', () => {
     socket.value.on('connect', () => {
       isConnected.value = true
       console.log('✅ Socket connected:', socket.value.id)
-      
-      // Register client type
-      socket.value.emit('register', {
-        type: screenType.value,
-        room_id: roomId.value
-      })
-      socket.value.emit('join_room', {
-        type: screenType.value,
-        room_id: roomId.value
-      })
+      socket.value.emit('register', { type: screenType.value, room_id: roomId.value })
+      socket.value.emit('join_room', { type: screenType.value, room_id: roomId.value })
     })
 
     socket.value.on('disconnect', (reason) => {
@@ -84,74 +80,48 @@ export const useKaraokeStore = defineStore('karaoke', () => {
       console.error('Socket error:', err.message)
     })
 
-    // ========================================
-    // EVENT LISTENERS (SESUAIKAN DENGAN BACKEND!)
-    // ========================================
-    
-    // Backend emit: sio.emit("play", {...}, room=room)
+    // Event listeners
     socket.value.on('play', (data) => {
-      console.log('🎵 Play event received:', data)
-      currentSong.value = {
-        song_id: data.song_id,
-        queue_id: data.queue_id,
-        song_title: '',
-        song_artist: ''
-      }
+      console.log('🎵 Play event:', data)
+      currentSong.value = { song_id: data.song_id, queue_id: data.queue_id, song_title: '', song_artist: '', auto_play: data.auto_play || false }
       isPlaying.value = true
-      
-      // Fetch song details
-      if (data.song_id) {
-        fetchSongDetail(data.song_id)
-      }
+      if (data.song_id) fetchSongDetail(data.song_id)
     })
 
-    // Backend emit: sio.emit("ctrl", {"action": "..."}, room=room)
     socket.value.on('ctrl', (data) => {
-      console.log('🎮 Control event received:', data)
+      console.log('🎮 Control:', data)
       if (data.action === 'pause') isPlaying.value = false
       if (data.action === 'resume') isPlaying.value = true
-      if (data.action === 'skip') {
+      if (data.action === 'skip' || data.action === 'stop') {
         isPlaying.value = false
         currentSong.value = null
         fetchQueue()
       }
     })
 
-    // Backend emit: sio.emit("vol", {"volume": ...}, room=room)
-    socket.value.on('vol', (data) => {
-      currentVolume.value = data.volume
-    })
-
-    // Backend emit: sio.emit("vocal", {"channel": ...}, room=room)
-    socket.value.on('vocal', (data) => {
-      vocalMode.value = data.channel
-    })
-
-    // Backend emit: sio.emit("queue_updated", {...}, room=room)
-    socket.value.on('queue_updated', () => {
-      fetchQueue()
-    })
-
-    // Backend emit: sio.emit("ok", {...}, to=sid)
-    socket.value.on('ok', (data) => {
-      console.log('✅ Registration confirmed:', data)
+    socket.value.on('vol', (data) => { currentVolume.value = data.volume })
+    socket.value.on('vocal', (data) => { vocalMode.value = data.channel })
+    socket.value.on('queue_updated', () => { fetchQueue() })
+    socket.value.on('ok', (data) => { console.log('✅ Registration confirmed:', data) })
+    
+    socket.value.on('queue_empty', (data) => {
+      console.log('📭 Queue empty for room:', data.room_id)
+      if (data.room_id === roomId.value) {
+        currentSong.value = null
+        isPlaying.value = false
+      }
     })
   }
 
-  // Fetch single song detail
   async function fetchSongDetail(songId) {
     try {
-      const response = await axios.get(`/api/songs?limit=1&search=&offset=${songId - 1}`)
-      // Lebih baik pakai endpoint get song by ID
-      const allSongs = await axios.get('/api/songs?limit=1000')
-      const song = allSongs.data.find(s => s.id === songId)
+      const res = await axios.get('/api/songs?limit=1000')
+      const song = res.data.find(s => s.id === songId)
       if (song && currentSong.value) {
         currentSong.value.song_title = song.title
         currentSong.value.song_artist = song.artist || ''
       }
-    } catch (err) {
-      console.error('Failed to fetch song detail:', err)
-    }
+    } catch (err) { console.error('Fetch song detail error:', err) }
   }
 
   // API calls
@@ -160,136 +130,92 @@ export const useKaraokeStore = defineStore('karaoke', () => {
       const params = { limit: 250 }
       if (searchQuery.value) params.search = searchQuery.value
       if (selectedGenre.value) params.genre = selectedGenre.value
-      if (selectedLanguage.value) params.language = selectedLanguage.value
-
       const response = await axios.get('/api/songs', { params })
       songs.value = response.data
       error.value = null
-    } catch (err) {
-      console.error('Failed to fetch songs:', err)
-    }
+    } catch (err) { console.error('Fetch songs error:', err) }
   }
 
   async function fetchQueue() {
     try {
-      const response = await axios.get(`/api/queue/${roomId.value}`)
+      const response = await axios.get(`/api/queue/${encodeURIComponent(roomId.value)}`)
       queue.value = response.data
-    } catch (err) {
-      console.error('Failed to fetch queue:', err)
-    }
+    } catch (err) { console.error('Fetch queue error:', err) }
   }
 
   async function fetchGenres() {
     try {
       const response = await axios.get('/api/songs/genres')
       genres.value = response.data
-    } catch (err) {
-      console.error('Failed to fetch genres:', err)
-    }
-  }
-
-  async function fetchLanguages() {
-    try {
-      const response = await axios.get('/api/songs/languages')
-      languages.value = response.data
-    } catch (err) {
-      console.error('Failed to fetch languages:', err)
-    }
+    } catch (err) { console.error('Fetch genres error:', err) }
   }
 
   async function fetchStats() {
     try {
       const response = await axios.get('/api/admin/stats')
       stats.value = response.data
-    } catch (err) {
-      console.error('Failed to fetch stats:', err)
-    }
+    } catch (err) { console.error('Fetch stats error:', err) }
+  }
+
+  async function fetchRooms() {
+    try {
+      const response = await axios.get('/api/rooms/active')
+      availableRooms.value = response.data.rooms || []
+    } catch (err) { console.error('Fetch rooms error:', err) }
   }
 
   async function addToQueue(songId) {
     try {
-      await axios.post('/api/queue', {
-        song_id: songId,
-        room_id: roomId.value
-      })
+      await axios.post('/api/queue', { song_id: songId, room_id: roomId.value })
       await fetchQueue()
       return true
-    } catch (err) {
-      console.error('Failed to add to queue:', err)
-      return false
-    }
+    } catch (err) { console.error('Add to queue error:', err); return false }
   }
 
   async function removeFromQueue(queueId) {
     try {
-      await axios.delete(`/api/queue/${queueId}?room_id=${roomId.value}`)
+      await axios.delete(`/api/queue/${queueId}?room_id=${encodeURIComponent(roomId.value)}`)
       await fetchQueue()
-    } catch (err) {
-      console.error('Failed to remove from queue:', err)
-    }
+    } catch (err) { console.error('Remove from queue error:', err) }
   }
 
-  // Player controls (emit ke backend)
   function playSong(songId, queueId) {
     if (socket.value && isConnected.value) {
-      console.log('▶️ Emitting play_song:', { song_id: songId, queue_id: queueId, room_id: roomId.value })
-      socket.value.emit('play_song', {
-        song_id: songId,
-        room_id: roomId.value,
-        queue_id: queueId
-      })
+      socket.value.emit('play_song', { song_id: songId, room_id: roomId.value, queue_id: queueId })
     }
   }
 
   function pauseSong() {
-    if (socket.value && isConnected.value) {
-      socket.value.emit('pause_song', { room_id: roomId.value })
-    }
+    if (socket.value && isConnected.value) socket.value.emit('pause_song', { room_id: roomId.value })
   }
 
   function resumeSong() {
-    if (socket.value && isConnected.value) {
-      socket.value.emit('resume_song', { room_id: roomId.value })
-    }
+    if (socket.value && isConnected.value) socket.value.emit('resume_song', { room_id: roomId.value })
   }
 
   function skipSong(queueId) {
-    if (socket.value && isConnected.value) {
-      socket.value.emit('skip_song', {
-        room_id: roomId.value,
-        queue_id: queueId
-      })
-    }
+    if (socket.value && isConnected.value) socket.value.emit('skip_song', { room_id: roomId.value, queue_id: queueId })
   }
 
   function setVolume(volume) {
     currentVolume.value = volume
-    if (socket.value && isConnected.value) {
-      socket.value.emit('set_volume', {
-        room_id: roomId.value,
-        volume: volume
-      })
-    }
+    if (socket.value && isConnected.value) socket.value.emit('set_volume', { room_id: roomId.value, volume: volume })
   }
 
   function toggleVocal(channel) {
     vocalMode.value = channel
-    if (socket.value && isConnected.value) {
-      socket.value.emit('toggle_vocal', {
-        room_id: roomId.value,
-        channel: channel
-      })
-    }
+    if (socket.value && isConnected.value) socket.value.emit('toggle_vocal', { room_id: roomId.value, channel: channel })
   }
 
   return {
     songs, queue, currentSong, isPlaying, currentVolume, vocalMode,
     searchQuery, selectedGenre, selectedLanguage, screenType, roomId,
     isDarkMode, socket, isConnected, genres, languages, stats, token, error,
+    availableRooms,
     filteredSongs, waitingQueue, currentQueue,
     setScreenType, setRoomId, connectSocket,
-    fetchSongs, fetchQueue, fetchGenres, fetchLanguages,
+    fetchSongs, fetchQueue, fetchGenres,
     addToQueue, removeFromQueue, playSong, pauseSong, resumeSong,
-    skipSong, setVolume, toggleVocal, fetchStats, fetchSongDetail
+    skipSong, setVolume, toggleVocal, fetchStats, fetchSongDetail, fetchRooms
   }
 })

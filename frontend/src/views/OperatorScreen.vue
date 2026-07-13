@@ -6,7 +6,13 @@
         <img src="/icons/icon-512x512.png" alt="BPF" class="bar-logo" />
         <div class="bar-info">
           <span class="bar-title">BPF Karaoke</span>
-          <span class="bar-room">{{ store.roomId }}</span>
+          <div class="room-selector">
+              <select v-model="store.roomId" @change="onRoomChange" class="room-select">
+                <option v-for="r in store.availableRooms" :key="r.name" :value="r.name">
+                  {{ r.name }} {{ r.queue_count > 0 ? '(' + r.queue_count + ')' : '' }}
+                </option>
+              </select>
+            </div>
         </div>
       </div>
       <div class="bar-center">
@@ -391,6 +397,17 @@ function confirmRemove(item) {
   }
 }
 
+
+function onRoomChange() {
+  store.fetchQueue()
+  store.fetchSongs()
+  if (store.socket) {
+    store.socket.emit('register', { type: 'operator-screen', room_id: store.roomId })
+    store.socket.emit('join_room', { type: 'operator', room_id: store.roomId })
+  }
+  showToast('Pindah ke ' + store.roomId, '🚪')
+}
+
 function skipCurrent() {
   if (store.currentSong) {
     store.skipSong(store.currentSong.queue_id)
@@ -466,6 +483,7 @@ function refreshAll() {
   store.fetchGenres()
   store.fetchQueue()
   store.fetchStats()
+  store.fetchRooms()
   fetchMood()
   showToast('Data diperbarui', '🔄')
 }
@@ -488,6 +506,7 @@ onMounted(() => {
   store.fetchGenres()
   store.fetchQueue()
   store.fetchStats()
+  store.fetchRooms()
   fetchMood()
 })
 </script>

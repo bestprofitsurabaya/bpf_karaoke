@@ -355,6 +355,37 @@ async def del_queue(queue_id: int, room_id: str = Query("KARAOKE BPF SBY"), db=D
     await db.commit(); await sio.emit("queue_updated", {"room_id": room_id}, room=room_id); return {"ok": True}
 
 
+
+@app.get("/api/rooms/active")
+async def get_active_rooms(db=Depends(get_db)):
+    """Get rooms with active queues"""
+    # Get distinct room_ids from queue
+    r = await db.execute(
+        select(QueueItem.room_id, func.count(QueueItem.id))
+        .where(QueueItem.status == "waiting")
+        .group_by(QueueItem.room_id)
+    )
+    active_queues = {row[0]: row[1] for row in r}
+    
+    # Get all rooms
+    r2 = await db.execute(select(Room).where(Room.is_active == True).order_by(Room.name))
+    rooms = r2.scalars().all()
+    
+    result = []
+    for room in rooms:
+        result.append({
+            "id": room.id,
+            "name": room.name,
+            "description": room.description,
+            "capacity": room.capacity,
+            "is_active": room.is_active,
+            "queue_count": active_queues.get(room.name, 0),
+            "is_busy": active_queues.get(room.name, 0) > 0
+        })
+    
+    return {"rooms": result, "total": len(result)}
+
+
 # ============================================
 # ROOM MANAGEMENT ENDPOINTS
 # ============================================
@@ -398,6 +429,23 @@ async def delete_room(room_id: int, db=Depends(get_db)):
 # ============================================
 # ADMIN ENDPOINTS
 # ============================================
+
+
+@app.post("/api/rooms/{room_name}/clear-queue")
+async def clear_room_queue(room_name: str, db=Depends(get_db)):
+    """Clear all waiting queue for a room"""
+    result = await db.execute(
+        update(QueueItem)
+        .where(QueueItem.room_id == room_name, QueueItem.status == "waiting")
+        .values(status="skipped", completed_at=datetime.utcnow())
+    )
+    await db.commit()
+    
+    await sio.emit("queue_updated", {"room_id": room_name}, room=room_name)
+    await sio.emit("queue_empty", {"room_id": room_name, "message": "Queue dibersihkan oleh admin"}, room=room_name)
+    
+    return {"message": f"Queue for room '{room_name}' cleared", "affected": result.rowcount}
+
 @app.post("/api/admin/songs/scan")
 async def scan(path: Optional[str] = Query(None), db=Depends(get_db)):
     sp = Path(path) if path else mp

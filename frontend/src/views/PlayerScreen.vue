@@ -405,7 +405,10 @@ watch(() => store.roomId, async () => {
 // Lifecycle
 onMounted(async () => {
   store.setScreenType('player')
-  store.setRoomId('default')
+  // Read room from URL parameter
+  const urlParams = new URLSearchParams(window.location.search)
+  const roomParam = urlParams.get('room') || localStorage.getItem('karaoke_room') || 'Room 1'
+  store.setRoomId(roomParam)
   store.connectSocket()
   store.fetchQueue()
   setupSocket()
