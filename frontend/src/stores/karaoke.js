@@ -1,176 +1,295 @@
 import { defineStore } from 'pinia'
-import axios from 'axios'
+import { ref, computed } from 'vue'
 import { io } from 'socket.io-client'
+import axios from 'axios'
 
-export const useKaraokeStore = defineStore('karaoke', {
-  state: () => ({
-    songs: [],
-    waitingQueue: [],
-    currentSong: null,
-    isPlaying: false,
-    currentVolume: 80,
-    vocalMode: 'stereo',
-    searchQuery: '',
-    selectedGenre: null,
-    genres: [],
-    stats: {},
-    roomId: localStorage.getItem('karaoke_room') || 'KARAOKE BPF SBY',
-    screenType: 'operator',
-    isConnected: false,
-    socket: null
-  }),
+export const useKaraokeStore = defineStore('karaoke', () => {
+  // State
+  const songs = ref([])
+  const queue = ref([])
+  const currentSong = ref(null)
+  const isPlaying = ref(false)
+  const currentVolume = ref(80)
+  const vocalMode = ref('stereo')
+  const searchQuery = ref('')
+  const selectedGenre = ref(null)
+  const selectedLanguage = ref(null)
+  const screenType = ref('operator')
+  const roomId = ref('default')
+  const isDarkMode = ref(true)
+  const socket = ref(null)
+  const isConnected = ref(false)
+  const genres = ref([])
+  const languages = ref([])
+  const stats = ref({})
+  const token = ref(localStorage.getItem('auth_token') || '')
+  const error = ref(null)
 
-  getters: {
-    filteredSongs: (state) => {
-      return state.songs
+  // Getters
+  const filteredSongs = computed(() => {
+    let result = songs.value
+    if (searchQuery.value) {
+      const query = searchQuery.value.toLowerCase()
+      result = result.filter(song =>
+        song.title.toLowerCase().includes(query) ||
+        (song.artist && song.artist.toLowerCase().includes(query))
+      )
     }
-  },
+    if (selectedGenre.value) result = result.filter(song => song.genre === selectedGenre.value)
+    if (selectedLanguage.value) result = result.filter(song => song.language === selectedLanguage.value)
+    return result
+  })
 
-  actions: {
-    setRoomId(id) {
-      this.roomId = id
-      localStorage.setItem('karaoke_room', id)
-      if (this.socket) {
-        this.socket.emit('register', { type: this.screenType, room_id: this.roomId })
-      }
-    },
-    setScreenType(type) {
-      this.screenType = type
-    },
-    connectSocket() {
-      if (this.socket) return;
+  const waitingQueue = computed(() => queue.value.filter(item => item.status === 'waiting'))
+  const currentQueue = computed(() => queue.value.find(item => item.status === 'playing'))
+
+  // Actions
+  function setScreenType(type) { screenType.value = type }
+  function setRoomId(id) { roomId.value = id }
+
+  function connectSocket() {
+    const wsUrl = window.location.origin
+    
+    socket.value = io(wsUrl, {
+      transports: ['websocket', 'polling'],
+      path: '/socket.io/',
+      reconnection: true,
+      reconnectionAttempts: 20,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000
+    })
+
+    socket.value.on('connect', () => {
+      isConnected.value = true
+      console.log('✅ Socket connected:', socket.value.id)
       
-      const wsUrl = import.meta.env.VITE_WS_URL || 'wss://nasbpfsby.duckdns.org:8443'
-      this.socket = io(wsUrl, { transports: ['websocket'], secure: true })
-
-      this.socket.on('connect', () => {
-        this.isConnected = true
-        this.socket.emit('register', { type: this.screenType, room_id: this.roomId })
+      // Register client type
+      socket.value.emit('register', {
+        type: screenType.value,
+        room_id: roomId.value
       })
-
-      this.socket.on('disconnect', () => {
-        this.isConnected = false
+      socket.value.emit('join_room', {
+        type: screenType.value,
+        room_id: roomId.value
       })
+    })
 
-      this.socket.on('queue_updated', () => {
-        this.fetchQueue()
-      })
+    socket.value.on('disconnect', (reason) => {
+      isConnected.value = false
+      console.log('❌ Socket disconnected:', reason)
+    })
 
-      this.socket.on('play', (data) => {
-        const found = this.waitingQueue.find(q => q.id === data.queue_id)
-        if (found) {
-          this.currentSong = {
-            queue_id: found.id,
-            song_id: found.song_id,
-            song_title: found.song.title,
-            song_artist: found.song.artist,
-            file_path: found.song.file_path
-          }
-        }
-        this.isPlaying = true
-      })
+    socket.value.on('connect_error', (err) => {
+      console.error('Socket error:', err.message)
+    })
 
-      this.socket.on('ctrl', (data) => {
-        if (data.action === 'pause') this.isPlaying = false
-        if (data.action === 'resume') this.isPlaying = true
-        if (data.action === 'skip') {
-          this.currentSong = null
-          this.isPlaying = false
-          this.fetchQueue()
-        }
-      })
-
-      this.socket.on('vol', (data) => {
-        this.currentVolume = data.volume
-      })
-
-      this.socket.on('vocal', (data) => {
-        this.vocalMode = data.channel
-      })
-    },
-
-    async fetchSongs() {
-      try {
-        let url = `/api/songs?limit=250`
-        if (this.searchQuery) url += `&search=${encodeURIComponent(this.searchQuery)}`
-        if (this.selectedGenre) url += `&genre=${encodeURIComponent(this.selectedGenre)}`
-        const res = await axios.get(url)
-        this.songs = res.data
-      } catch (err) {
-        console.error(err)
+    // ========================================
+    // EVENT LISTENERS (SESUAIKAN DENGAN BACKEND!)
+    // ========================================
+    
+    // Backend emit: sio.emit("play", {...}, room=room)
+    socket.value.on('play', (data) => {
+      console.log('🎵 Play event received:', data)
+      currentSong.value = {
+        song_id: data.song_id,
+        queue_id: data.queue_id,
+        song_title: '',
+        song_artist: ''
       }
-    },
-
-    async fetchGenres() {
-      try {
-        const res = await axios.get('/api/songs/genres')
-        this.genres = res.data
-      } catch (err) {
-        console.error(err)
+      isPlaying.value = true
+      
+      // Fetch song details
+      if (data.song_id) {
+        fetchSongDetail(data.song_id)
       }
-    },
+    })
 
-    async fetchQueue() {
-      try {
-        const res = await axios.get(`/api/queue/${encodeURIComponent(this.roomId)}`)
-        this.waitingQueue = res.data
-      } catch (err) {
-        console.error(err)
+    // Backend emit: sio.emit("ctrl", {"action": "..."}, room=room)
+    socket.value.on('ctrl', (data) => {
+      console.log('🎮 Control event received:', data)
+      if (data.action === 'pause') isPlaying.value = false
+      if (data.action === 'resume') isPlaying.value = true
+      if (data.action === 'skip') {
+        isPlaying.value = false
+        currentSong.value = null
+        fetchQueue()
       }
-    },
+    })
 
-    async fetchStats() {
-      try {
-        const res = await axios.get('/api/admin/stats')
-        this.stats = res.data
-      } catch (err) {
-        console.error(err)
+    // Backend emit: sio.emit("vol", {"volume": ...}, room=room)
+    socket.value.on('vol', (data) => {
+      currentVolume.value = data.volume
+    })
+
+    // Backend emit: sio.emit("vocal", {"channel": ...}, room=room)
+    socket.value.on('vocal', (data) => {
+      vocalMode.value = data.channel
+    })
+
+    // Backend emit: sio.emit("queue_updated", {...}, room=room)
+    socket.value.on('queue_updated', () => {
+      fetchQueue()
+    })
+
+    // Backend emit: sio.emit("ok", {...}, to=sid)
+    socket.value.on('ok', (data) => {
+      console.log('✅ Registration confirmed:', data)
+    })
+  }
+
+  // Fetch single song detail
+  async function fetchSongDetail(songId) {
+    try {
+      const response = await axios.get(`/api/songs?limit=1&search=&offset=${songId - 1}`)
+      // Lebih baik pakai endpoint get song by ID
+      const allSongs = await axios.get('/api/songs?limit=1000')
+      const song = allSongs.data.find(s => s.id === songId)
+      if (song && currentSong.value) {
+        currentSong.value.song_title = song.title
+        currentSong.value.song_artist = song.artist || ''
       }
-    },
-
-    async addToQueue(songId) {
-      try {
-        await axios.post('/api/queue', { song_id: songId, room_id: this.roomId })
-        this.fetchQueue()
-        return true
-      } catch (err) {
-        return false
-      }
-    },
-
-    async removeFromQueue(queueId) {
-      try {
-        await axios.delete(`/api/queue/${queueId}?room_id=${encodeURIComponent(this.roomId)}`)
-        this.fetchQueue()
-      } catch (err) {
-        console.error(err)
-      }
-    },
-
-    playSong(songId, queueId) {
-      if (this.socket) {
-        this.socket.emit('play_song', { song_id: songId, queue_id: queueId, room_id: this.roomId })
-      }
-    },
-
-    pauseSong() {
-      if (this.socket) this.socket.emit('pause_song', { room_id: this.roomId })
-    },
-
-    resumeSong() {
-      if (this.socket) this.socket.emit('resume_song', { room_id: this.roomId })
-    },
-
-    skipSong(queueId) {
-      if (this.socket) this.socket.emit('skip_song', { queue_id: queueId, room_id: this.roomId })
-    },
-
-    setVolume(vol) {
-      if (this.socket) this.socket.emit('set_volume', { volume: parseInt(vol), room_id: this.roomId })
-    },
-
-    toggleVocal(mode) {
-      if (this.socket) this.socket.emit('toggle_vocal', { channel: mode, room_id: this.roomId })
+    } catch (err) {
+      console.error('Failed to fetch song detail:', err)
     }
+  }
+
+  // API calls
+  async function fetchSongs() {
+    try {
+      const params = { limit: 250 }
+      if (searchQuery.value) params.search = searchQuery.value
+      if (selectedGenre.value) params.genre = selectedGenre.value
+      if (selectedLanguage.value) params.language = selectedLanguage.value
+
+      const response = await axios.get('/api/songs', { params })
+      songs.value = response.data
+      error.value = null
+    } catch (err) {
+      console.error('Failed to fetch songs:', err)
+    }
+  }
+
+  async function fetchQueue() {
+    try {
+      const response = await axios.get(`/api/queue/${roomId.value}`)
+      queue.value = response.data
+    } catch (err) {
+      console.error('Failed to fetch queue:', err)
+    }
+  }
+
+  async function fetchGenres() {
+    try {
+      const response = await axios.get('/api/songs/genres')
+      genres.value = response.data
+    } catch (err) {
+      console.error('Failed to fetch genres:', err)
+    }
+  }
+
+  async function fetchLanguages() {
+    try {
+      const response = await axios.get('/api/songs/languages')
+      languages.value = response.data
+    } catch (err) {
+      console.error('Failed to fetch languages:', err)
+    }
+  }
+
+  async function fetchStats() {
+    try {
+      const response = await axios.get('/api/admin/stats')
+      stats.value = response.data
+    } catch (err) {
+      console.error('Failed to fetch stats:', err)
+    }
+  }
+
+  async function addToQueue(songId) {
+    try {
+      await axios.post('/api/queue', {
+        song_id: songId,
+        room_id: roomId.value
+      })
+      await fetchQueue()
+      return true
+    } catch (err) {
+      console.error('Failed to add to queue:', err)
+      return false
+    }
+  }
+
+  async function removeFromQueue(queueId) {
+    try {
+      await axios.delete(`/api/queue/${queueId}?room_id=${roomId.value}`)
+      await fetchQueue()
+    } catch (err) {
+      console.error('Failed to remove from queue:', err)
+    }
+  }
+
+  // Player controls (emit ke backend)
+  function playSong(songId, queueId) {
+    if (socket.value && isConnected.value) {
+      console.log('▶️ Emitting play_song:', { song_id: songId, queue_id: queueId, room_id: roomId.value })
+      socket.value.emit('play_song', {
+        song_id: songId,
+        room_id: roomId.value,
+        queue_id: queueId
+      })
+    }
+  }
+
+  function pauseSong() {
+    if (socket.value && isConnected.value) {
+      socket.value.emit('pause_song', { room_id: roomId.value })
+    }
+  }
+
+  function resumeSong() {
+    if (socket.value && isConnected.value) {
+      socket.value.emit('resume_song', { room_id: roomId.value })
+    }
+  }
+
+  function skipSong(queueId) {
+    if (socket.value && isConnected.value) {
+      socket.value.emit('skip_song', {
+        room_id: roomId.value,
+        queue_id: queueId
+      })
+    }
+  }
+
+  function setVolume(volume) {
+    currentVolume.value = volume
+    if (socket.value && isConnected.value) {
+      socket.value.emit('set_volume', {
+        room_id: roomId.value,
+        volume: volume
+      })
+    }
+  }
+
+  function toggleVocal(channel) {
+    vocalMode.value = channel
+    if (socket.value && isConnected.value) {
+      socket.value.emit('toggle_vocal', {
+        room_id: roomId.value,
+        channel: channel
+      })
+    }
+  }
+
+  return {
+    songs, queue, currentSong, isPlaying, currentVolume, vocalMode,
+    searchQuery, selectedGenre, selectedLanguage, screenType, roomId,
+    isDarkMode, socket, isConnected, genres, languages, stats, token, error,
+    filteredSongs, waitingQueue, currentQueue,
+    setScreenType, setRoomId, connectSocket,
+    fetchSongs, fetchQueue, fetchGenres, fetchLanguages,
+    addToQueue, removeFromQueue, playSong, pauseSong, resumeSong,
+    skipSong, setVolume, toggleVocal, fetchStats, fetchSongDetail
   }
 })

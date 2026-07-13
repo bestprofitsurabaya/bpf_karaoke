@@ -8,7 +8,7 @@ module.exports = defineConfig({
     vue(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icons/icon-512x512.png', 'icons/icon-192x192.png'],
+      includeAssets: ['icons/icon-512x512.png'],
       manifest: {
         name: 'BPF Karaoke System',
         short_name: 'BPF Karaoke',
@@ -49,11 +49,23 @@ module.exports = defineConfig({
     }
   },
   server: {
+    host: '0.0.0.0',
     port: 3000,
     proxy: {
-      '/api': { target: 'http://localhost:5002', changeOrigin: true },
-      '/socket.io': { target: 'http://localhost:5002', ws: true, changeOrigin: true },
-      '/media': { target: 'http://localhost:5002', changeOrigin: true }
+      '/api': {
+        target: 'http://karaoke_backend:5000',
+        changeOrigin: true,
+        secure: false
+      },
+      '/socket.io': {
+        target: 'http://karaoke_backend:5000',
+        ws: true,
+        changeOrigin: true
+      },
+      '/media': {
+        target: 'http://karaoke_backend:5000',
+        changeOrigin: true
+      }
     }
   }
 })

@@ -25,3 +25,5 @@ ffmpeg-python==0.2.0
 
 # Video processing
 opencv-python-headless==4.10.0.84
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.3

@@ -1,6 +1,6 @@
 """
 BPF Karaoke System - Backend API v3.0 (Production)
-Developed by IT BPF Surabaya - PT BESTPROFIT FUTURES SURABAYA
+PT BESTPROFIT FUTURES SURABAYA
 """
 import asyncio, os, json, hashlib, secrets
 from datetime import datetime, timedelta
@@ -16,12 +16,15 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import (
     String, Integer, Text, DateTime, Boolean, ForeignKey,
-    select, update, delete, func, or_, inspect
+    select, update, delete, func, or_
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from jose import jwt
 import socketio
 
+# ============================================
+# SETTINGS
+# ============================================
 class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://karaoke_admin:K4r40k3S3cur3P4ss!2024@karaoke_db:5432/karaoke_db"
     jwt_secret: str = "K4r40k3JWTS3cr3tK3yV3ryL0ngStr1ng2024!@#$"
@@ -36,6 +39,9 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# ============================================
+# DATABASE
+# ============================================
 engine = create_async_engine(settings.database_url, echo=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -82,6 +88,9 @@ class User(Base):
     is_active = mapped_column(Boolean, default=True)
     created_at = mapped_column(DateTime, default=datetime.utcnow)
 
+# ============================================
+# MODELS
+# ============================================
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -91,6 +100,36 @@ class SongUpdate(BaseModel):
     artist: Optional[str] = None
     genre: Optional[str] = None
 
+class SR(BaseModel):
+    id: int
+    title: str
+    artist: Optional[str] = None
+    genre: Optional[str] = None
+    file_path: str
+    play_count: int = 0
+    is_active: bool = True
+    class Config:
+        from_attributes = True
+
+class QR(BaseModel):
+    song_id: int
+    room_id: str = "KARAOKE BPF SBY"
+    requester_name: Optional[str] = None
+
+class QResp(BaseModel):
+    id: int
+    song_id: int
+    room_id: str
+    status: str
+    priority: int
+    created_at: datetime
+    song: Optional[SR] = None
+    class Config:
+        from_attributes = True
+
+# ============================================
+# HELPERS
+# ============================================
 def get_password_hash(password: str) -> str:
     salt = secrets.token_hex(16)
     h = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
@@ -108,13 +147,25 @@ def create_access_token(data: dict, exp: Optional[timedelta] = None) -> str:
     d["exp"] = datetime.utcnow() + (exp or timedelta(minutes=settings.jwt_expiration))
     return jwt.encode(d, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
+# ============================================
+# FASTAPI APP
+# ============================================
 app = FastAPI(title="BPF Karaoke", version="3.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 mp = Path(settings.media_path)
 mp.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=str(mp)), name="media")
 
+# ============================================
+# SOCKET.IO
+# ============================================
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*", logger=False, engineio_logger=False)
 active: Dict[str, Any] = {}
 
@@ -181,8 +232,9 @@ async def toggle_vocal(sid, data):
     room = data.get("room_id", "KARAOKE BPF SBY")
     await sio.emit("vocal", {"channel": data.get("channel", "stereo")}, room=room)
 
-socket_app = socketio.ASGIApp(sio, app)
-
+# ============================================
+# DB DEPENDENCY
+# ============================================
 async def get_db():
     async with async_session() as s:
         try:
@@ -190,10 +242,9 @@ async def get_db():
         finally:
             await s.close()
 
-class SR(BaseModel):
-    id: int; title: str; artist: Optional[str] = None; genre: Optional[str] = None
-    file_path: str; play_count: int = 0; is_active: bool = True
-    class Config: from_attributes = True
+# ============================================
+# CORE API ENDPOINTS
+# ============================================
 
 @app.get("/api/health")
 async def health():
@@ -205,14 +256,25 @@ async def login(req: LoginRequest, db=Depends(get_db)):
     u = r.scalar_one_or_none()
     if not u or not verify_password(req.password, u.password_hash):
         raise HTTPException(401, "Invalid credentials")
-    return {"access_token": create_access_token({"sub": u.username, "role": u.role}), "user": {"username": u.username, "role": u.role}}
+    return {
+        "access_token": create_access_token({"sub": u.username, "role": u.role}),
+        "token_type": "bearer",
+        "user": {"username": u.username, "role": u.role}
+    }
 
-@app.get("/api/songs")
-async def get_songs(search: Optional[str] = Query(None), genre: Optional[str] = Query(None),
-                    limit: int = Query(250), offset: int = Query(0), db=Depends(get_db)):
+@app.get("/api/songs", response_model=List[SR])
+async def get_songs(
+    search: Optional[str] = Query(None),
+    genre: Optional[str] = Query(None),
+    limit: int = Query(250),
+    offset: int = Query(0),
+    db=Depends(get_db)
+):
     q = select(Song).where(Song.is_active == True)
-    if search: q = q.where(or_(Song.title.ilike(f"%{search}%"), Song.artist.ilike(f"%{search}%")))
-    if genre: q = q.where(Song.genre == genre)
+    if search:
+        q = q.where(or_(Song.title.ilike(f"%{search}%"), Song.artist.ilike(f"%{search}%")))
+    if genre:
+        q = q.where(Song.genre == genre)
     r = await db.execute(q.order_by(Song.title).offset(offset).limit(limit))
     return r.scalars().all()
 
@@ -220,7 +282,8 @@ async def get_songs(search: Optional[str] = Query(None), genre: Optional[str] = 
 async def update_song(song_id: int, req: SongUpdate, db=Depends(get_db)):
     r = await db.execute(select(Song).where(Song.id == song_id, Song.is_active == True))
     song = r.scalar_one_or_none()
-    if not song: raise HTTPException(404, "Lagu tidak ditemukan")
+    if not song:
+        raise HTTPException(404, "Lagu tidak ditemukan")
     song.title = req.title
     song.artist = req.artist
     song.genre = req.genre
@@ -231,78 +294,122 @@ async def update_song(song_id: int, req: SongUpdate, db=Depends(get_db)):
 async def delete_song(song_id: int, db=Depends(get_db)):
     r = await db.execute(select(Song).where(Song.id == song_id))
     song = r.scalar_one_or_none()
-    if not song: raise HTTPException(404, "Lagu tidak ditemukan")
+    if not song:
+        raise HTTPException(404, "Lagu tidak ditemukan")
     song.is_active = False
     await db.commit()
     return {"ok": True}
 
 @app.get("/api/songs/genres")
 async def genres(db=Depends(get_db)):
-    r = await db.execute(select(Song.genre, func.count(Song.id)).where(Song.is_active == True, Song.genre.isnot(None)).group_by(Song.genre).order_by(func.count(Song.id).desc()))
+    r = await db.execute(
+        select(Song.genre, func.count(Song.id))
+        .where(Song.is_active == True, Song.genre.isnot(None))
+        .group_by(Song.genre)
+        .order_by(func.count(Song.id).desc())
+    )
     return [{"genre": row[0], "count": row[1]} for row in r]
 
-class QR(BaseModel):
-    song_id: int; room_id: str = "KARAOKE BPF SBY"; requester_name: Optional[str] = None
 
-class QResp(BaseModel):
-    id: int; song_id: int; room_id: str; status: str; priority: int; created_at: datetime; song: Optional[SR] = None
-    class Config: from_attributes = True
+@app.get("/api/media/stream/{song_id}")
+async def stream_song(song_id: int, db=Depends(get_db)):
+    """Stream video file untuk player"""
+    r = await db.execute(select(Song).where(Song.id == song_id))
+    song = r.scalar_one_or_none()
+    if not song:
+        raise HTTPException(404, "Song not found")
+    
+    file_path = Path(song.file_path)
+    if not file_path.exists():
+        # Coba cari di media path
+        alt_path = mp / file_path.name
+        if alt_path.exists():
+            file_path = alt_path
+        else:
+            raise HTTPException(404, f"Media file not found: {file_path}")
+    
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        file_path,
+        media_type="video/mp4",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"}
+    )
+
 
 @app.post("/api/queue")
 async def add_queue(req: QR, db=Depends(get_db)):
     sg = (await db.execute(select(Song).where(Song.id == req.song_id))).scalar_one_or_none()
-    if not sg: raise HTTPException(404, "Song not found")
+    if not sg:
+        raise HTTPException(404, "Song not found")
     qi = QueueItem(song_id=req.song_id, room_id=req.room_id, requester_name=req.requester_name)
-    db.add(qi); await db.commit(); await db.refresh(qi)
+    db.add(qi)
+    await db.commit()
+    await db.refresh(qi)
     await sio.emit("queue_updated", {"room_id": req.room_id}, room=req.room_id)
-    return QResp(id=qi.id, song_id=qi.song_id, room_id=qi.room_id, status=qi.status, priority=qi.priority, created_at=qi.created_at, song=SR.model_validate(sg))
+    return QResp(
+        id=qi.id, song_id=qi.song_id, room_id=qi.room_id,
+        status=qi.status, priority=qi.priority, created_at=qi.created_at,
+        song=SR.model_validate(sg)
+    )
 
 @app.get("/api/queue/{room_id}")
 async def get_queue(room_id: str = "KARAOKE BPF SBY", db=Depends(get_db)):
-    items = (await db.execute(select(QueueItem).where(QueueItem.room_id == room_id, QueueItem.status == "waiting").order_by(QueueItem.created_at))).scalars().all()
+    items = (await db.execute(
+        select(QueueItem)
+        .where(QueueItem.room_id == room_id, QueueItem.status == "waiting")
+        .order_by(QueueItem.created_at)
+    )).scalars().all()
     out = []
     for i in items:
         sg = (await db.execute(select(Song).where(Song.id == i.song_id))).scalar_one_or_none()
-        out.append(QResp(id=i.id, song_id=i.song_id, room_id=i.room_id, status=i.status, priority=i.priority, created_at=i.created_at, song=SR.model_validate(sg) if sg else None))
+        out.append(QResp(
+            id=i.id, song_id=i.song_id, room_id=i.room_id,
+            status=i.status, priority=i.priority, created_at=i.created_at,
+            song=SR.model_validate(sg) if sg else None
+        ))
     return out
 
 @app.delete("/api/queue/{queue_id}")
 async def del_queue(queue_id: int, room_id: str = Query("KARAOKE BPF SBY"), db=Depends(get_db)):
-    r = await db.execute(update(QueueItem).where(QueueItem.id == queue_id, QueueItem.room_id == room_id).values(status="skipped", completed_at=datetime.utcnow()))
-    if r.rowcount == 0: raise HTTPException(404, "Not found")
+    r = await db.execute(
+        update(QueueItem)
+        .where(QueueItem.id == queue_id, QueueItem.room_id == room_id)
+        .values(status="skipped", completed_at=datetime.utcnow())
+    )
+    if r.rowcount == 0:
+        raise HTTPException(404, "Not found")
     await db.commit()
     await sio.emit("queue_updated", {"room_id": room_id}, room=room_id)
     return {"ok": True}
 
+# ============================================
+# ADMIN ENDPOINTS
+# ============================================
+
 @app.post("/api/admin/songs/scan")
 async def scan(path: Optional[str] = Query(None), db=Depends(get_db)):
     sp = Path(path) if path else mp
-    if not sp.exists(): raise HTTPException(404, "Path not found")
+    if not sp.exists():
+        raise HTTPException(404, "Path not found")
     ext = {".mp4", ".mkv", ".avi", ".webm", ".mov"}
     n = 0
     for f in sp.rglob("*"):
-        if f.suffix.lower() not in ext: continue
-                # Cek apakah lagu sudah ada di database (aktif maupun nonaktif)
-        existing_song_stmt = await db.execute(select(Song).where(Song.file_path == str(f)))
-        existing_song = existing_song_stmt.scalar_one_or_none()
-        
-        nm = f.stem; art = "Unknown"; tit = nm
-        if " - " in nm: 
+        if f.suffix.lower() not in ext:
+            continue
+        existing = (await db.execute(select(Song).where(Song.file_path == str(f)))).scalar_one_or_none()
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                existing.updated_at = datetime.utcnow()
+                n += 1
+            continue
+        nm = f.stem
+        art = None
+        tit = nm
+        if " - " in nm:
             p = nm.split(" - ", 1)
             art = p[0].strip()
             tit = p[1].strip()
-
-        if existing_song:
-            if not existing_song.is_active:
-                # KASUS: Lagu pernah dihapus, diupload ulang dengan nama sama. Aktifkan kembali!
-                existing_song.is_active = True
-                existing_song.title = tit
-                existing_song.artist = art
-                existing_song.updated_at = datetime.utcnow()
-                n += 1
-            continue
-        nm = f.stem; art = None; tit = nm
-        if " - " in nm: p = nm.split(" - ", 1); art = p[0].strip(); tit = p[1].strip()
         db.add(Song(title=tit, artist=art, file_path=str(f), file_format=f.suffix.lower().replace(".", ""), is_active=True))
         n += 1
     await db.commit()
@@ -314,8 +421,82 @@ async def stats(db=Depends(get_db)):
     tp = (await db.execute(select(func.sum(Song.play_count)))).scalar() or 0
     tdy = datetime.utcnow().date()
     qt = (await db.execute(select(func.count(QueueItem.id)).where(func.date(QueueItem.created_at) == tdy))).scalar() or 0
-    return {"total_songs": ts, "total_plays": int(tp), "queue_today": qt, "active_connections": len(active), "timestamp": datetime.utcnow().isoformat()}
+    return {
+        "total_songs": ts,
+        "total_plays": int(tp),
+        "queue_today": qt,
+        "active_connections": len(active),
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
+@app.get("/api/admin/minio/stats")
+async def get_minio_stats():
+    try:
+        from services.minio_client import minio_client
+        return minio_client.get_stats()
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+@app.get("/api/admin/minio/objects")
+async def list_minio_objects(prefix: str = "karaoke/"):
+    try:
+        from services.minio_client import minio_client
+        objects = minio_client.list_objects(prefix)
+        return {"objects": objects, "total": len(objects)}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/admin/transcode/scan")
+async def trigger_media_scan():
+    try:
+        from celery_tasks import scan_for_new_media
+        result = scan_for_new_media.delay()
+        return {"message": "Scan started", "task_id": result.id}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/admin/transcode/status")
+async def get_transcode_status():
+    try:
+        from celery_tasks import TRANSCODED_PATH
+        if not TRANSCODED_PATH.exists():
+            return {"transcoded_files": 0, "files": []}
+        files = []
+        for f in TRANSCODED_PATH.glob('*.mp4'):
+            files.append({
+                "name": f.name,
+                "size_mb": round(f.stat().st_size / 1024 / 1024, 2),
+                "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+            })
+        return {"transcoded_files": len(files), "files": sorted(files, key=lambda x: x['modified'], reverse=True)[:20]}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ============================================
+# INCLUDE AI & AUTH ROUTERS (SEBELUM socket_app!)
+# ============================================
+try:
+    from ai_routes import router as ai_router
+    app.include_router(ai_router)
+    print("✅ AI routes loaded")
+except Exception as e:
+    print(f"⚠️ AI routes not loaded: {e}")
+
+try:
+    from auth_routes import router as auth_router
+    app.include_router(auth_router)
+    print("✅ Auth routes loaded")
+except Exception as e:
+    print(f"⚠️ Auth routes not loaded: {e}")
+
+# ============================================
+# SOCKET.IO WRAPPER (HARUS SETELAH SEMUA ROUTER)
+# ============================================
+socket_app = socketio.ASGIApp(sio, app)
+
+# ============================================
+# STARTUP
+# ============================================
 @app.on_event("startup")
 async def startup():
     async with engine.begin() as conn:
@@ -329,60 +510,3 @@ async def startup():
             await session.execute(stmt)
         await session.commit()
     print("  BPF KARAOKE BACKEND READY!")
-
-# ============================================
-# MINIO ENDPOINTS (Admin Only)
-# ============================================
-
-@app.get("/api/admin/minio/stats")
-async def get_minio_stats():
-    """Get MinIO storage statistics"""
-    try:
-        from services.minio_client import minio_client
-        stats = minio_client.get_stats()
-        return stats
-    except Exception as e:
-        return {"available": False, "error": str(e)}
-
-@app.get("/api/admin/minio/objects")
-async def list_minio_objects(prefix: str = "karaoke/"):
-    """List objects in MinIO bucket"""
-    try:
-        from services.minio_client import minio_client
-        objects = minio_client.list_objects(prefix)
-        return {"objects": objects, "total": len(objects)}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.post("/api/admin/transcode/scan")
-async def trigger_media_scan():
-    """Trigger manual media scan for transcoding"""
-    try:
-        from celery_tasks import scan_for_new_media
-        result = scan_for_new_media.delay()
-        return {"message": "Scan started", "task_id": result.id}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/api/admin/transcode/status")
-async def get_transcode_status():
-    """Get transcoding status"""
-    try:
-        from celery_tasks import TRANSCODED_PATH
-        if not TRANSCODED_PATH.exists():
-            return {"transcoded_files": 0, "files": []}
-        
-        files = []
-        for f in TRANSCODED_PATH.glob('*.mp4'):
-            files.append({
-                "name": f.name,
-                "size_mb": round(f.stat().st_size / 1024 / 1024, 2),
-                "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat()
-            })
-        
-        return {
-            "transcoded_files": len(files),
-            "files": sorted(files, key=lambda x: x['modified'], reverse=True)[:20]
-        }
-    except Exception as e:
-        return {"error": str(e)}

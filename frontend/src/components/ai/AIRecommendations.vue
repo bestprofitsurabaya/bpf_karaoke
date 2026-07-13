@@ -62,7 +62,7 @@
           v-for="result in searchResults.slice(0, 5)" 
           :key="result.id"
           class="search-result-item"
-          @click="$emit('addToQueue', result.id)"
+          @click="$emit('add-to-queue', result.id)"
         >
           <span class="result-score">{{ result.match_score || 80 }}%</span>
           <div>
@@ -93,7 +93,7 @@
             v-for="song in (generatedPlaylist.songs || []).slice(0, 10)" 
             :key="song.id"
             class="pl-song"
-            @click="$emit('addToQueue', song.id)"
+            @click="$emit('add-to-queue', song.id)"
           >
             <span>{{ song.title }}</span>
             <button class="add-pl-btn">+</button>
@@ -116,7 +116,7 @@
             <div class="similar-title">Song #{{ song.song_id }}</div>
             <div class="similar-reason">{{ song.reason || 'Similar' }}</div>
           </div>
-          <button @click="$emit('addToQueue', song.song_id)" class="add-similar-btn">+</button>
+          <button @click="$emit('add-to-queue', song.song_id)" class="add-similar-btn">+</button>
         </div>
       </div>
     </div>
