@@ -79,13 +79,23 @@ class QueueItem(Base):
     completed_at = mapped_column(DateTime, nullable=True)
 
 class User(Base):
+    """User model with ISO 27001 security fields"""
     __tablename__ = "users"
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     username = mapped_column(String(100), unique=True, nullable=False)
     password_hash = mapped_column(String(200), nullable=False)
     role = mapped_column(String(20), default="operator")
     is_active = mapped_column(Boolean, default=True)
+    # ISO 27001 A.9.2.4: Force password change on first login
+    requires_password_change = mapped_column(Boolean, default=True)
+    # ISO 27001 A.9.4.2: Brute-force protection
+    failed_login_attempts = mapped_column(Integer, default=0)
+    locked_until = mapped_column(DateTime, nullable=True)
+    # ISO 27001 A.9.4.3: Password history & audit
+    last_password_change = mapped_column(DateTime, nullable=True)
+    password_history = mapped_column(Text, nullable=True)  # JSON: list of old hashes
     created_at = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Room(Base):
@@ -138,10 +148,9 @@ def get_password_hash(p: str) -> str:
     s = secrets.token_hex(16); h = hashlib.sha256(f"{s}{p}".encode()).hexdigest(); return f"{s}${h}"
 
 def verify_password(plain: str, hashed: str) -> bool:
-    try:
-        s, h = hashed.split("$", 1)
-        return hashlib.sha256(f"{s}{plain}".encode()).hexdigest() == h
-    except: return False
+    """Verify password using bcrypt via security module"""
+    from security import verify_password as vp
+    return vp(plain, hashed)
 
 def create_access_token(data: dict, exp: Optional[timedelta] = None) -> str:
     d = data.copy(); d["exp"] = datetime.utcnow() + (exp or timedelta(minutes=settings.jwt_expiration))
@@ -639,7 +648,13 @@ async def scan(path: Optional[str] = Query(None), db=Depends(get_db)):
         except:
             pass
         db.add(Song(title=tit, artist=art, genre=predicted_genre, file_path=str(f), file_format=f.suffix.lower().replace(".", ""), is_active=True))
-    await db.commit(); return {"message": f"{n} new songs added", "new_songs": n}
+    await db.commit(); # Hitung total lagu aktif
+    total_active = (await db.execute(select(func.count(Song.id)).where(Song.is_active == True))).scalar() or 0
+    return {
+        "message": f"Scan selesai! {n} lagu baru, total {total_active} lagu aktif.",
+        "new_songs": n,
+        "total_active_songs": total_active
+    }
 
 @app.get("/api/admin/stats")
 async def stats(db=Depends(get_db)):
@@ -864,7 +879,14 @@ async def startup():
     async with engine.begin() as conn: await conn.run_sync(Base.metadata.create_all)
     async with async_session() as session:
         for ud in [
-            {"username": settings.admin_user, "password_hash": get_password_hash(settings.admin_password), "role": "admin", "is_active": True},
+            {
+                "username": settings.admin_user, 
+                "password_hash": get_password_hash(settings.admin_password), 
+                "role": "admin", 
+                "is_active": True,
+                "requires_password_change": True,  # ISO 27001: Force change on first login
+                "last_password_change": datetime.utcnow()
+            },
             {"username": "operator", "password_hash": get_password_hash("operator123"), "role": "operator", "is_active": True}
         ]:
             await session.execute(pg_insert(User).values(**ud).on_conflict_do_nothing(index_elements=["username"]))

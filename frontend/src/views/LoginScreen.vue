@@ -276,27 +276,50 @@ const handleChangePassword = async () => {
     return
   }
   
+  if (!newPassword.value || newPassword.value.length < 8) {
+    errorMessage.value = 'Password minimal 8 karakter'
+    return
+  }
+  
   isLoading.value = true
   errorMessage.value = ''
+  successMessage.value = ''
   
   try {
     const token = localStorage.getItem('auth_token')
-    await axios.post('/api/auth/change-password', {
+    if (!token) {
+      errorMessage.value = 'Session expired. Silakan login ulang.'
+      isLoading.value = false
+      return
+    }
+    
+    const res = await axios.post('/api/auth/change-password', {
       old_password: oldPassword.value,
       new_password: newPassword.value,
       confirm_password: confirmPassword.value
     }, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { 
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
     })
     
-    successMessage.value = 'Password berhasil diubah!'
-    showChangePassword.value = false
-    oldPassword.value = ''
-    newPassword.value = ''
-    confirmPassword.value = ''
+    if (res.data && res.data.message) {
+      successMessage.value = res.data.message
+      showChangePassword.value = false
+      oldPassword.value = ''
+      newPassword.value = ''
+      confirmPassword.value = ''
+    }
     
   } catch (err) {
-    errorMessage.value = err.response?.data?.detail || 'Gagal mengubah password'
+    if (err.response?.status === 401) {
+      errorMessage.value = 'Password lama salah atau session expired'
+    } else if (err.response?.data?.detail) {
+      errorMessage.value = err.response.data.detail
+    } else {
+      errorMessage.value = 'Gagal mengubah password. Coba lagi.'
+    }
   } finally {
     isLoading.value = false
   }
