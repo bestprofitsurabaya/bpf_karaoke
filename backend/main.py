@@ -70,7 +70,7 @@ class QueueItem(Base):
     __tablename__ = "queue"
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     song_id = mapped_column(Integer, ForeignKey("songs.id", ondelete="CASCADE"), nullable=False)
-    room_id = mapped_column(String(100), nullable=False, default="KARAOKE BPF SBY", index=True)
+    room_id = mapped_column(String(100), nullable=False, default="default", index=True)
     requester_name = mapped_column(String(100), nullable=True)
     status = mapped_column(String(20), default="waiting")
     priority = mapped_column(Integer, default=0)
@@ -119,7 +119,7 @@ class SR(BaseModel):
     file_path: str; play_count: int = 0; is_active: bool = True
     class Config: from_attributes = True
 
-class QR(BaseModel): song_id: int; room_id: str = "KARAOKE BPF SBY"; requester_name: Optional[str] = None
+class QR(BaseModel): song_id: int; room_id: str = "default"; requester_name: Optional[str] = None
 
 class QResp(BaseModel):
     id: int; song_id: int; room_id: str; status: str; priority: int; created_at: datetime
@@ -173,21 +173,21 @@ active: Dict[str, Any] = {}
 
 @sio.event
 async def connect(sid, environ):
-    active[sid] = {"sid": sid, "type": "unknown", "room": "KARAOKE BPF SBY"}
+    active[sid] = {"sid": sid, "type": "unknown", "room": "default"}
 @sio.event
 async def disconnect(sid):
     active.pop(sid, None)
 
 @sio.event
 async def register(sid, data):
-    room = data.get("room_id", "KARAOKE BPF SBY")
+    room = data.get("room_id", "default")
     if sid in active: active[sid].update({"type": data.get("type", "unknown"), "room": room})
     await sio.enter_room(sid, room)
     await sio.emit("ok", {"type": data.get("type"), "room_id": room}, to=sid)
 
 @sio.event
 async def play_song(sid, data):
-    sid_q = data.get("queue_id"); room = data.get("room_id", "KARAOKE BPF SBY")
+    sid_q = data.get("queue_id"); room = data.get("room_id", "default")
     async with async_session() as s:
         if sid_q: await s.execute(update(QueueItem).where(QueueItem.id == sid_q).values(status="playing", played_at=datetime.utcnow()))
         await s.execute(update(Song).where(Song.id == data.get("song_id")).values(play_count=Song.play_count + 1))
@@ -197,14 +197,14 @@ async def play_song(sid, data):
 
 @sio.event
 async def pause_song(sid, data):
-    await sio.emit("ctrl", {"action": "pause"}, room=data.get("room_id", "KARAOKE BPF SBY"))
+    await sio.emit("ctrl", {"action": "pause"}, room=data.get("room_id", "default"))
 @sio.event
 async def resume_song(sid, data):
-    await sio.emit("ctrl", {"action": "resume"}, room=data.get("room_id", "KARAOKE BPF SBY"))
+    await sio.emit("ctrl", {"action": "resume"}, room=data.get("room_id", "default"))
 
 @sio.event
 async def skip_song(sid, data):
-    room = data.get("room_id", "KARAOKE BPF SBY")
+    room = data.get("room_id", "default")
     async with async_session() as s:
         if data.get("queue_id"): await s.execute(update(QueueItem).where(QueueItem.id == data["queue_id"]).values(status="skipped", completed_at=datetime.utcnow())); await s.commit()
     await sio.emit("ctrl", {"action": "skip"}, room=room)
@@ -213,7 +213,7 @@ async def skip_song(sid, data):
 @sio.event
 async def song_ended(sid, data):
     """Dipanggil saat video selesai. Auto-play lagu berikutnya setelah jeda."""
-    room = data.get("room_id", "KARAOKE BPF SBY")
+    room = data.get("room_id", "default")
     queue_id = data.get("queue_id")
     
     # Tandai lagu selesai
@@ -277,13 +277,13 @@ async def song_ended(sid, data):
 
 @sio.event
 async def set_volume(sid, data):
-    await sio.emit("vol", {"volume": data.get("volume", 80)}, room=data.get("room_id", "KARAOKE BPF SBY"))
+    await sio.emit("vol", {"volume": data.get("volume", 80)}, room=data.get("room_id", "default"))
 @sio.event
 async def join_room(sid, data):
-    await sio.enter_room(sid, data.get("room_id", "KARAOKE BPF SBY"))
+    await sio.enter_room(sid, data.get("room_id", "default"))
 @sio.event
 async def toggle_vocal(sid, data):
-    await sio.emit("vocal", {"channel": data.get("channel", "stereo")}, room=data.get("room_id", "KARAOKE BPF SBY"))
+    await sio.emit("vocal", {"channel": data.get("channel", "stereo")}, room=data.get("room_id", "default"))
 
 # ============================================
 # DB DEPENDENCY
@@ -349,7 +349,7 @@ async def add_queue(req: QR, db=Depends(get_db)):
     return QResp(id=qi.id, song_id=qi.song_id, room_id=qi.room_id, status=qi.status, priority=qi.priority, created_at=qi.created_at, song=SR.model_validate(sg))
 
 @app.get("/api/queue/{room_id}")
-async def get_queue(room_id: str = "KARAOKE BPF SBY", db=Depends(get_db)):
+async def get_queue(room_id: str = "default", db=Depends(get_db)):
     items = (await db.execute(select(QueueItem).where(QueueItem.room_id == room_id, QueueItem.status == "waiting").order_by(QueueItem.created_at))).scalars().all()
     out = []
     for i in items:
@@ -358,7 +358,7 @@ async def get_queue(room_id: str = "KARAOKE BPF SBY", db=Depends(get_db)):
     return out
 
 @app.delete("/api/queue/{queue_id}")
-async def del_queue(queue_id: int, room_id: str = Query("KARAOKE BPF SBY"), db=Depends(get_db)):
+async def del_queue(queue_id: int, room_id: str = Query("default"), db=Depends(get_db)):
     r = await db.execute(update(QueueItem).where(QueueItem.id == queue_id, QueueItem.room_id == room_id).values(status="skipped", completed_at=datetime.utcnow()))
     if r.rowcount == 0: raise HTTPException(404, "Not found")
     await db.commit(); await sio.emit("queue_updated", {"room_id": room_id}, room=room_id); return {"ok": True}

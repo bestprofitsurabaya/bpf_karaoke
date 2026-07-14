@@ -15,7 +15,7 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   const selectedGenre = ref(null)
   const selectedLanguage = ref(null)
   const screenType = ref('operator')
-  const roomId = ref('KARAOKE BPF SBY')
+  const roomId = ref(localStorage.getItem('karaoke_room') || 'default')
   const isDarkMode = ref(true)
   const socket = ref(null)
   const isConnected = ref(false)
@@ -47,7 +47,11 @@ export const useKaraokeStore = defineStore('karaoke', () => {
 
   // Actions
   function setScreenType(type) { screenType.value = type }
-  function setRoomId(id) { roomId.value = id }
+  function setRoomId(id) { 
+  roomId.value = id
+  localStorage.setItem('karaoke_room', id)
+  fetchQueue()  // Auto-refresh queue saat ganti room
+}
 
   function connectSocket() {
     const wsUrl = window.location.origin
@@ -133,6 +137,17 @@ export const useKaraokeStore = defineStore('karaoke', () => {
     try {
       const res = await axios.get(`/api/queue/${roomId.value}`)
       queue.value = res.data
+      // Update current song jika ada yang playing
+      const playing = res.data.find(q => q.status === 'playing')
+      if (playing && playing.song) {
+        currentSong.value = {
+          song_id: playing.song_id,
+          queue_id: playing.id,
+          song_title: playing.song.title,
+          song_artist: playing.song.artist || ''
+        }
+        isPlaying.value = true
+      }
     } catch (err) { console.error('Fetch queue:', err) }
   }
 
@@ -174,8 +189,12 @@ export const useKaraokeStore = defineStore('karaoke', () => {
 
   function playSong(songId, queueId) {
     if (socket.value && isConnected.value) {
-      console.log('▶️ Emitting play_song:', { song_id: songId, queue_id: queueId })
+      console.log('▶️ Emitting play_song:', { song_id: songId, queue_id: queueId, room_id: roomId.value })
       socket.value.emit('play_song', { song_id: songId, room_id: roomId.value, queue_id: queueId })
+      // Optimistic update: langsung set isPlaying
+      isPlaying.value = true
+      currentSong.value = { song_id: songId, queue_id: queueId, song_title: '', song_artist: '' }
+      fetchSongDetail(songId)
     }
   }
 

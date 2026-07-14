@@ -27,6 +27,9 @@
         </div>
       </div>
       <div class="bar-right">
+        <button class="btn-launch" @click="launchPlayer" title="Buka Player di Tab Baru">
+          📺 Launch Player
+        </button>
         <div class="status-dot" :class="{ online: store.isConnected }"></div>
         <span class="status-text">{{ store.isConnected ? 'Online' : 'Offline' }}</span>
         <button class="btn-icon" @click="refreshAll" title="Refresh">🔄</button>
@@ -209,6 +212,13 @@ function thumbGradient(genre) {
   return map[genre] || 'linear-gradient(135deg, #ef4444, #3b82f6)'
 }
 
+function launchPlayer() {
+  const room = encodeURIComponent(store.roomId)
+  const url = `${window.location.origin}/player?screen=2&room=${room}`
+  window.open(url, '_blank', 'width=1280,height=720')
+  showToast('📺 Player diluncurkan untuk ' + store.roomId)
+}
+
 onMounted(() => { store.setScreenType('operator'); store.fetchSongs(); store.fetchGenres(); store.fetchQueue(); store.fetchStats(); store.fetchMood(); fetchRooms() })
 </script>
 
@@ -239,6 +249,8 @@ onMounted(() => { store.setScreenType('operator'); store.fetchSongs(); store.fet
 .bar-right { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; color: #64748b; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #ef4444; }
 .status-dot.online { background: #10b981; }
+.btn-launch { padding: 0.4rem 0.85rem; background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; border: none; border-radius: 8px; font-weight: 600; font-size: 0.75rem; cursor: pointer; white-space: nowrap; transition: all 0.2s; display: flex; align-items: center; gap: 0.35rem; }
+.btn-launch:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.3); }
 .btn-icon { background: none; border: none; font-size: 1.1rem; cursor: pointer; padding: 0.25rem; text-decoration: none; }
 
 .main-layout { flex: 1; display: flex; overflow: hidden; }
