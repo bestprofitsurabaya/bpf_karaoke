@@ -1,387 +1,296 @@
 """
-Online Genre Detection Service
-Uses multiple APIs to detect song genre automatically:
-1. MusicBrainz (free, no API key)
-2. AudD (free tier, needs API key)
-3. iTunes/Apple Music Search
+Genre Detector Service - AI Hybrid Genre Prediction
+Menggunakan kombinasi Fuzzy Matching + Rule-based Classification
 """
 
-import aiohttp
-import asyncio
-from typing import Optional, Dict, List
-from urllib.parse import quote
-import hashlib
-import json
-from pathlib import Path
-from datetime import datetime
+import re
+from typing import Dict, Tuple, Optional
+from collections import defaultdict
+from fuzzywuzzy import fuzz
 
-class OnlineGenreDetector:
+class GenreDetector:
+    """
+    AI Genre Detector menggunakan:
+    1. Keyword-based classification
+    2. Artist database matching  
+    3. Title pattern analysis
+    """
+    
     def __init__(self):
-        self.cache = {}
-        self.cache_file = Path("/app/uploads/genre_cache.json")
-        self._load_cache()
+        # Genre keywords database
+        self.genre_keywords = {
+            'Dangdut': [
+                'dangdut', 'koplo', 'campursari', 'jaipong', 'sunda',
+                'rhoma', 'irama', 'inul', 'dangdutan', 'jaran goyang'
+            ],
+            'K-Pop': [
+                'bts', 'blackpink', 'twice', 'exo', 'nct', 'stray kids',
+                'aespa', 'ive', 'newjeans', 'seventeen', 'got7', 'monsta x',
+                'red velvet', 'itzy', 'txt', 'enhypen', 'bigbang', 'shinee',
+                'k-pop', 'kpop', 'korean', 'girls generation', 'super junior'
+            ],
+            'Rock': [
+                'rock', 'metal', 'punk', 'grunge', 'alternative',
+                'linkin park', 'metallica', 'nirvana', 'green day', 'foo fighters',
+                'slank', 'superman is dead', 'jamrud', 'padi', 'dewa'
+            ],
+            'Barat': [
+                'ed sheeran', 'taylor swift', 'justin bieber', 'ariana grande',
+                'adele', 'bruno mars', 'coldplay', 'maroon 5', 'weeknd',
+                'dua lipa', 'billie eilish', 'harry styles', 'shawn mendes',
+                'west', 'english', 'international', 'british', 'american'
+            ],
+            'Pop Indonesia': [
+                'raisa', 'isyana', 'fatin', 'tiara andini', 'lyodra',
+                'mahalini', 'rizky febian', 'tulus', 'afgan', 'budi doremi',
+                'armada', 'dmasiv', 'noah', 'peterpan', 'sheila on 7',
+                'geisha', 'kotak', 'vierra', 'nidji', 'letto',
+                'ungu', 'rossa', 'bcl', 'agnez mo', 'maudy ayunda',
+                'pop', 'indonesia', 'melayu'
+            ],
+            'Religi': [
+                'religi', 'islami', 'sholawat', 'qasidah', 'nasyid',
+                'hadad alwi', 'sulis', 'opick', 'unggul', 'gigi religi',
+                'christian', 'gospel', 'rohani', 'praise', 'worship',
+                'hillsong', 'bethel', 'elevation'
+            ],
+            'Anak': [
+                'anak', 'kids', 'children', 'balonku', 'cicak',
+                'naik kereta', 'pelangi', 'bintang kecil', 'kasih ibu',
+                'nina bobo', 'abc', 'alfabet'
+            ],
+            'Mandarin': [
+                'mandarin', 'chinese', 'c-pop', 'cpop', 'taiwan',
+                'jay chou', 'jj lin', 'wang lee hom', 'teresa teng',
+                'faye wong', 'eason chan', 'jolin tsai'
+            ],
+            'Daerah': [
+                'daerah', 'tradisional', 'jawa', 'sunda', 'batak', 'minang',
+                'ambon', 'manado', 'papua', 'kalimantan', 'bali',
+                'keroncong', 'gambus', 'gamelan', 'angklung'
+            ],
+            'Jazz': [
+                'jazz', 'blues', 'swing', 'bossa nova', 'smooth jazz',
+                'louis armstrong', 'miles davis', 'frank sinatra', 'norah jones',
+                'jamie cullum', 'diana krall', 'tompi', 'indro hardjodikoro'
+            ],
+            'EDM': [
+                'edm', 'electronic', 'dance', 'house', 'techno', 'trance',
+                'dubstep', 'dj', 'remix', 'marshmello', 'calvin harris',
+                'avicii', 'tiesto', 'martin garrix', 'zedd', 'skrillex'
+            ],
+            'Hip Hop': [
+                'hip hop', 'rap', 'trap', 'drake', 'eminem', 'kendrick lamar',
+                'kanye west', 'jay-z', 'travis scott', 'cardi b', 'nicki minaj',
+                'rich brian', 'ramengvrl', 'warren hue'
+            ]
+        }
         
-        # Rate limiting
-        self.last_request_time = {}
-        self.min_interval = 1.0  # 1 second between requests to same API
+        # Confidence weights
+        self.weights = {
+            'exact_artist_match': 0.95,
+            'artist_fuzzy_match': 0.75,
+            'title_keyword': 0.60,
+            'partial_artist_match': 0.50,
+            'default': 0.0
+        }
         
-    def _load_cache(self):
-        """Load cached genre results"""
-        try:
-            if self.cache_file.exists():
-                with open(self.cache_file, 'r') as f:
-                    self.cache = json.load(f)
-        except:
-            self.cache = {}
+        # Cache untuk performance
+        self._cache = {}
     
-    def _save_cache(self):
-        """Save genre results to cache"""
-        try:
-            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.cache_file, 'w') as f:
-                json.dump(self.cache, f, indent=2)
-        except:
-            pass
-    
-    def _get_cache_key(self, title: str, artist: str = None) -> str:
-        """Generate cache key from title and artist"""
-        combined = f"{title or ''}-{artist or ''}".lower().strip()
-        return hashlib.md5(combined.encode()).hexdigest()[:12]
-    
-    async def _rate_limit(self, api_name: str):
-        """Rate limit API requests"""
-        import time
-        now = time.time()
-        if api_name in self.last_request_time:
-            elapsed = now - self.last_request_time[api_name]
-            if elapsed < self.min_interval:
-                await asyncio.sleep(self.min_interval - elapsed)
-        self.last_request_time[api_name] = time.time()
-    
-    async def detect_genre_online(self, title: str, artist: str = None) -> Dict:
+    def predict_genre(self, artist: str, title: str) -> Dict:
         """
-        Detect genre using multiple online APIs
-        Returns: {"genre": "Pop", "confidence": 0.85, "source": "musicbrainz"}
+        Predict genre dengan confidence score
+        
+        Args:
+            artist: Nama artis/penyanyi
+            title: Judul lagu
+            
+        Returns:
+            {
+                'genre': str,
+                'confidence': float (0.0 - 1.0),
+                'method': str (detection method used),
+                'alternatives': list of dict
+            }
         """
-        # Check cache first
-        cache_key = self._get_cache_key(title, artist)
-        if cache_key in self.cache:
-            cached = self.cache[cache_key]
-            # Cache valid for 7 days
-            if (datetime.now() - datetime.fromisoformat(cached.get('cached_at', '2000-01-01'))).days < 7:
-                return cached
+        # Normalize inputs
+        artist_lower = artist.lower().strip() if artist else ''
+        title_lower = title.lower().strip() if title else ''
         
-        # Try multiple APIs
-        result = None
+        # Cache key
+        cache_key = f"{artist_lower}|{title_lower}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         
-        # 1. Try MusicBrainz (free, reliable)
-        result = await self._detect_musicbrainz(title, artist)
-        if result and result.get('confidence', 0) > 0.5:
-            self._add_to_cache(cache_key, result)
-            return result
+        # Collect scores from all methods
+        scores = defaultdict(float)
+        methods = defaultdict(str)
         
-        # 2. Try iTunes/Apple Music
-        result = await self._detect_itunes(title, artist)
-        if result and result.get('confidence', 0) > 0.4:
-            self._add_to_cache(cache_key, result)
-            return result
+        # Method 1: Exact artist match
+        if artist_lower:
+            exact_genre = self._exact_artist_match(artist_lower)
+            if exact_genre:
+                scores[exact_genre] = self.weights['exact_artist_match']
+                methods[exact_genre] = 'exact_artist_match'
         
-        # 3. Fallback: Local keyword matching
-        result = self._detect_local(title, artist)
-        self._add_to_cache(cache_key, result)
+        # Method 2: Fuzzy artist match
+        if artist_lower:
+            fuzzy_genre, fuzzy_score = self._fuzzy_artist_match(artist_lower)
+            if fuzzy_genre and fuzzy_score > 75:
+                weighted_score = self.weights['artist_fuzzy_match'] * (fuzzy_score / 100)
+                scores[fuzzy_genre] = max(scores[fuzzy_genre], weighted_score)
+                if not methods.get(fuzzy_genre):
+                    methods[fuzzy_genre] = 'fuzzy_artist_match'
+        
+        # Method 3: Title keyword match
+        if title_lower:
+            title_genre = self._title_keyword_match(title_lower)
+            if title_genre:
+                scores[title_genre] = max(scores[title_genre], self.weights['title_keyword'])
+                if not methods.get(title_genre):
+                    methods[title_genre] = 'title_keyword'
+        
+        # Method 4: Combined analysis
+        combined_genre, combined_score = self._combined_analysis(artist_lower, title_lower)
+        if combined_genre:
+            scores[combined_genre] = max(scores[combined_genre], combined_score)
+            if not methods.get(combined_genre):
+                methods[combined_genre] = 'combined_analysis'
+        
+        # Determine best prediction
+        if scores:
+            best_genre = max(scores, key=scores.get)
+            confidence = scores[best_genre]
+            method = methods[best_genre]
+            
+            # Get alternatives
+            alternatives = [
+                {'genre': g, 'confidence': s}
+                for g, s in sorted(scores.items(), key=lambda x: x[1], reverse=True)[1:4]
+                if s > 0.3
+            ]
+        else:
+            best_genre = 'Unknown'
+            confidence = 0.0
+            method = 'no_match'
+            alternatives = []
+        
+        result = {
+            'genre': best_genre,
+            'confidence': round(confidence, 3),
+            'method': method,
+            'alternatives': alternatives,
+            'artist': artist,
+            'title': title
+        }
+        
+        # Cache result
+        self._cache[cache_key] = result
+        
         return result
     
-    async def detect_batch_online(self, songs: List[Dict], progress_callback=None) -> Dict:
-        """
-        Detect genre for multiple songs
-        songs: [{"id": 1, "title": "...", "artist": "..."}, ...]
-        """
-        results = []
-        total = len(songs)
-        
-        for i, song in enumerate(songs):
-            try:
-                genre_info = await self.detect_genre_online(
-                    song.get('title', ''),
-                    song.get('artist', '')
-                )
-                results.append({
-                    "song_id": song['id'],
-                    "title": song.get('title', ''),
-                    "artist": song.get('artist', ''),
-                    "detected_genre": genre_info.get('genre', 'Unknown'),
-                    "confidence": genre_info.get('confidence', 0),
-                    "source": genre_info.get('source', 'local'),
-                    "subgenres": genre_info.get('subgenres', []),
-                    "tags": genre_info.get('tags', [])
-                })
-                
-                # Report progress
-                if progress_callback:
-                    await progress_callback(i + 1, total, song.get('title', ''))
-                
-                # Rate limit
-                await asyncio.sleep(0.3)
-                
-            except Exception as e:
-                results.append({
-                    "song_id": song['id'],
-                    "title": song.get('title', ''),
-                    "error": str(e),
-                    "detected_genre": "Unknown",
-                    "confidence": 0
-                })
-        
-        return {
-            "total": total,
-            "detected": len([r for r in results if r.get('confidence', 0) > 0]),
-            "results": results
-        }
-    
-    async def _detect_musicbrainz(self, title: str, artist: str = None) -> Optional[Dict]:
-        """
-        Detect genre using MusicBrainz API
-        Free, no API key required, rate limit: 1 request/second
-        """
-        try:
-            await self._rate_limit('musicbrainz')
-            
-            # Search for recording
-            query = f'"{title}"'
-            if artist:
-                query += f' AND artist:"{artist}"'
-            
-            url = "https://musicbrainz.org/ws/2/recording/"
-            params = {
-                "query": query,
-                "fmt": "json",
-                "limit": 5
-            }
-            
-            headers = {
-                "User-Agent": "BPFKaraoke/3.0 (bestprofit-futures.com)",
-                "Accept": "application/json"
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        recordings = data.get('recordings', [])
-                        
-                        if recordings:
-                            # Get tags/genres from first matching recording
-                            for rec in recordings:
-                                tags = rec.get('tags', [])
-                                if tags:
-                                    # Map MusicBrainz tags to Indonesian genre names
-                                    genre_tags = [t.get('name', '') for t in tags]
-                                    main_genre = self._map_musicbrainz_genre(genre_tags)
-                                    
-                                    if main_genre:
-                                        return {
-                                            "genre": main_genre,
-                                            "confidence": min(0.9, 0.5 + len(tags) * 0.1),
-                                            "source": "musicbrainz",
-                                            "subgenres": genre_tags[:5],
-                                            "tags": genre_tags[:10]
-                                        }
-                        
-                        # If no tags, try to get from artist
-                        if artist and recordings:
-                            artist_tags = await self._get_artist_tags_musicbrainz(artist)
-                            if artist_tags:
-                                main_genre = self._map_musicbrainz_genre(artist_tags)
-                                return {
-                                    "genre": main_genre,
-                                    "confidence": 0.6,
-                                    "source": "musicbrainz_artist",
-                                    "subgenres": artist_tags[:5],
-                                    "tags": artist_tags
-                                }
-            
-            return None
-            
-        except asyncio.TimeoutError:
-            return None
-        except Exception as e:
-            print(f"MusicBrainz error: {e}")
-            return None
-    
-    async def _get_artist_tags_musicbrainz(self, artist: str) -> List[str]:
-        """Get tags for an artist from MusicBrainz"""
-        try:
-            await self._rate_limit('musicbrainz')
-            
-            url = "https://musicbrainz.org/ws/2/artist/"
-            params = {
-                "query": f'artist:"{artist}"',
-                "fmt": "json",
-                "limit": 3
-            }
-            
-            headers = {"User-Agent": "BPFKaraoke/3.0 (bestprofit-futures.com)"}
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        artists = data.get('artists', [])
-                        if artists:
-                            tags = artists[0].get('tags', [])
-                            return [t.get('name', '') for t in tags]
-            
-            return []
-        except:
-            return []
-    
-    async def _detect_itunes(self, title: str, artist: str = None) -> Optional[Dict]:
-        """
-        Detect genre using iTunes Search API
-        Free, no API key, provides genre info
-        """
-        try:
-            await self._rate_limit('itunes')
-            
-            term = title
-            if artist:
-                term = f"{artist} {title}"
-            
-            url = "https://itunes.apple.com/search"
-            params = {
-                "term": term,
-                "media": "music",
-                "limit": 3,
-                "country": "ID"  # Indonesia store
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        results = data.get('results', [])
-                        
-                        if results:
-                            genre = results[0].get('primaryGenreName', '')
-                            if genre:
-                                # Map iTunes genre to our categories
-                                mapped_genre = self._map_itunes_genre(genre)
-                                return {
-                                    "genre": mapped_genre,
-                                    "confidence": 0.7,
-                                    "source": "itunes",
-                                    "original_genre": genre,
-                                    "tags": [genre]
-                                }
-            
-            return None
-            
-        except Exception as e:
-            print(f"iTunes error: {e}")
-            return None
-    
-    def _map_musicbrainz_genre(self, tags: List[str]) -> Optional[str]:
-        """Map MusicBrainz tags to Indonesian genre categories"""
-        tag_string = ' '.join(tags).lower()
-        
-        mapping = {
-            "Pop Indonesia": ["indonesian pop", "indo pop", "pop indonesia", "indonesian"],
-            "Dangdut": ["dangdut", "koplo", "dangdut koplo"],
-            "Rock": ["rock", "alternative rock", "hard rock", "metal", "punk", "indie rock"],
-            "K-Pop": ["k-pop", "kpop", "korean pop", "korean"],
-            "Barat": ["pop", "western pop", "american pop", "british", "english"],
-            "Mandarin": ["mandopop", "cantopop", "chinese", "mandarin"],
-            "Jazz": ["jazz", "smooth jazz", "bossa nova", "swing"],
-            "EDM": ["electronic", "edm", "house", "techno", "dance", "trance", "dubstep"],
-            "Hip Hop": ["hip hop", "hip-hop", "rap", "trap", "rnb"],
-            "Ballad": ["ballad", "slow", "mellow", "acoustic"],
-            "Religi": ["religious", "gospel", "islamic", "christian", "spiritual"],
-        }
-        
-        for genre, keywords in mapping.items():
-            if any(kw in tag_string for kw in keywords):
+    def _exact_artist_match(self, artist: str) -> Optional[str]:
+        """Exact match artist name in keyword database"""
+        for genre, keywords in self.genre_keywords.items():
+            if artist in keywords:
                 return genre
-        
-        # Default based on first tag
-        if "pop" in tag_string:
-            return "Barat"
-        elif "rock" in tag_string:
-            return "Rock"
-        
         return None
     
-    def _map_itunes_genre(self, genre: str) -> str:
-        """Map iTunes genres to our categories"""
-        genre_lower = genre.lower()
+    def _fuzzy_artist_match(self, artist: str) -> Tuple[Optional[str], int]:
+        """Fuzzy match artist name against keyword database"""
+        best_genre = None
+        best_score = 0
         
-        mapping = {
-            "Pop Indonesia": ["pop indonesia", "indo pop", "indonesian pop"],
-            "Dangdut": ["dangdut", "world"],
-            "Rock": ["rock", "alternative", "metal"],
-            "K-Pop": ["k-pop", "korean"],
-            "Barat": ["pop", "adult contemporary", "singer/songwriter"],
-            "Jazz": ["jazz"],
-            "EDM": ["electronic", "dance"],
-            "Hip Hop": ["hip-hop", "rap"],
-            "R&B": ["r&b", "soul"],
-            "Religi": ["gospel", "christian", "religious"],
-        }
+        # Split artist name into parts
+        artist_parts = artist.split()
         
-        for our_genre, keywords in mapping.items():
-            if any(kw in genre_lower for kw in keywords):
-                return our_genre
+        for genre, keywords in self.genre_keywords.items():
+            for keyword in keywords:
+                # Full match
+                score = fuzz.ratio(artist, keyword)
+                if score > best_score:
+                    best_score = score
+                    best_genre = genre
+                
+                # Partial match (any part of artist name)
+                for part in artist_parts:
+                    if len(part) >= 3:
+                        part_score = fuzz.partial_ratio(part, keyword)
+                        if part_score > best_score:
+                            best_score = part_score
+                            best_genre = genre
         
-        return genre  # Return original if no match
+        return best_genre, best_score
     
-    def _detect_local(self, title: str, artist: str = None) -> Dict:
-        """Fallback: Local keyword-based detection"""
-        combined = f"{title or ''} {artist or ''}".lower()
-        
-        genre_patterns = {
-            "Dangdut": ["dangdut", "koplo", "jaran goyang", "gendang", "suling"],
-            "K-Pop": ["bts", "blackpink", "exo", "twice", "nct", "korea", "seoul"],
-            "Mandarin": ["mandarin", "chinese", "cina", "tiongkok", "shanghai", "beijing"],
-            "Rock": ["rock", "metal", "punk", "gitar listrik", "distorsi"],
-            "Jazz": ["jazz", "saxophone", "piano jazz", "blues"],
-            "EDM": ["dj", "remix", "electronic", "dance", "drop"],
-            "Hip Hop": ["rap", "trap", "beatbox", "freestyle"],
-            "Religi": ["sholawat", "quran", "rohani", "puji", "tuhan", "gereja", "islam"],
-            "Anak": ["anak", "balita", "tk", "paud", "kids", "children"],
-            "Ballad": ["ballad", "akustik", "piano", "slow", "acoustic"],
-        }
-        
-        for genre, keywords in genre_patterns.items():
-            if any(kw in combined for kw in keywords):
-                return {
-                    "genre": genre,
-                    "confidence": 0.5,
-                    "source": "local_keyword",
-                    "tags": [genre]
-                }
-        
-        # Default
-        return {
-            "genre": "Pop Indonesia",
-            "confidence": 0.2,
-            "source": "local_default",
-            "tags": ["Unknown"]
-        }
+    def _title_keyword_match(self, title: str) -> Optional[str]:
+        """Check title for genre-indicating keywords"""
+        for genre, keywords in self.genre_keywords.items():
+            if any(kw in title for kw in ['dangdut', 'koplo', 'religi', 'sholawat', 'k-pop', 'rock']):
+                if 'dangdut' in title or 'koplo' in title:
+                    return 'Dangdut'
+                if 'religi' in title or 'sholawat' in title:
+                    return 'Religi'
+                if 'k-pop' in title or 'kpop' in title:
+                    return 'K-Pop'
+                if 'rock' in title:
+                    return 'Rock'
+        return None
     
-    def _add_to_cache(self, cache_key: str, result: Dict):
-        """Add result to cache"""
-        result['cached_at'] = datetime.now().isoformat()
-        self.cache[cache_key] = result
-        # Save cache every 10 additions
-        if len(self.cache) % 10 == 0:
-            self._save_cache()
+    def _combined_analysis(self, artist: str, title: str) -> Tuple[Optional[str], float]:
+        """Combined analysis using both artist and title"""
+        # Check if it's Indonesian (based on common words in title)
+        indonesian_words = ['aku', 'kamu', 'cinta', 'hati', 'sayang', 'rindu', 'bahagia', 'sedih']
+        if artist or title:
+            combined_text = f"{artist} {title}"
+            indo_count = sum(1 for w in indonesian_words if w in combined_text)
+            if indo_count >= 2 and artist:
+                # Likely Pop Indonesia or Dangdut
+                return 'Pop Indonesia', 0.55
+        
+        return None, 0.0
+    
+    def predict_batch(self, songs: list) -> list:
+        """Predict genre for multiple songs"""
+        results = []
+        for song in songs:
+            prediction = self.predict_genre(
+                artist=song.get('artist', ''),
+                title=song.get('title', '')
+            )
+            results.append({
+                **song,
+                'predicted_genre': prediction['genre'],
+                'confidence': prediction['confidence'],
+                'method': prediction['method'],
+                'alternatives': prediction['alternatives']
+            })
+        return results
     
     def get_stats(self) -> Dict:
         """Get detector statistics"""
         return {
-            "cached_entries": len(self.cache),
-            "cache_file": str(self.cache_file),
-            "apis_available": ["musicbrainz", "itunes", "local"]
+            'total_genres': len(self.genre_keywords),
+            'total_keywords': sum(len(v) for v in self.genre_keywords.values()),
+            'cache_size': len(self._cache),
+            'genres': list(self.genre_keywords.keys())
         }
+    
+    def add_keyword(self, genre: str, keyword: str) -> bool:
+        """Add keyword to genre database"""
+        keyword = keyword.lower().strip()
+        if genre not in self.genre_keywords:
+            self.genre_keywords[genre] = []
+        if keyword not in self.genre_keywords[genre]:
+            self.genre_keywords[genre].append(keyword)
+            self._cache.clear()  # Invalidate cache
+            return True
+        return False
+    
+    def clear_cache(self):
+        """Clear prediction cache"""
+        self._cache.clear()
 
-# Singleton
-genre_detector = OnlineGenreDetector()
+
+# Singleton instance
+genre_detector = GenreDetector()

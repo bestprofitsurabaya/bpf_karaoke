@@ -426,6 +426,176 @@ async def delete_room(room_id: int, db=Depends(get_db)):
     return {"ok": True}
 
 
+
+# ============================================
+# GENRE MANAGEMENT ENDPOINTS (AI + Dynamic)
+# ============================================
+
+@app.get("/api/genres")
+async def get_genres(db=Depends(get_db)):
+    """
+    Get dynamic genre list dari database (SELECT DISTINCT)
+    Genre list tumbuh otomatis tanpa hardcode
+    """
+    r = await db.execute(
+        select(Song.genre, func.count(Song.id))
+        .where(Song.is_active == True, Song.genre.isnot(None), Song.genre != 'Unknown')
+        .group_by(Song.genre)
+        .order_by(func.count(Song.id).desc())
+    )
+    
+    genres = []
+    for row in r:
+        genres.append({
+            'genre': row[0],
+            'count': row[1],
+            'is_custom': True  # Semua genre dari DB adalah dynamic
+        })
+    
+    # Tambahkan genre defaults jika belum ada di DB
+    default_genres = [
+        'Pop Indonesia', 'Dangdut', 'K-Pop', 'Barat', 'Rock',
+        'Mandarin', 'Anak', 'Religi', 'Daerah', 'Jazz', 'EDM', 'Hip Hop'
+    ]
+    
+    existing_genres = {g['genre'] for g in genres}
+    for dg in default_genres:
+        if dg not in existing_genres:
+            genres.append({
+                'genre': dg,
+                'count': 0,
+                'is_custom': False
+            })
+    
+    return {
+        'genres': sorted(genres, key=lambda x: x['count'], reverse=True),
+        'total': len(genres),
+        'message': 'Genre list diambil secara dinamis dari database'
+    }
+
+@app.post("/api/admin/songs/bulk-genre")
+async def bulk_update_genre(
+    song_ids: List[int],
+    genre: str = Query(..., min_length=1, max_length=100),
+    db=Depends(get_db)
+):
+    """
+    Bulk update genre untuk multiple songs sekaligus
+    Body: [1, 2, 3, ...]
+    Query: ?genre=Pop+Indonesia
+    """
+    if not song_ids:
+        raise HTTPException(400, "No song IDs provided")
+    
+    if len(song_ids) > 500:
+        raise HTTPException(400, "Maximum 500 songs per bulk operation")
+    
+    # Update all songs in one query
+    result = await db.execute(
+        update(Song)
+        .where(Song.id.in_(song_ids))
+        .values(genre=genre, updated_at=datetime.utcnow())
+    )
+    await db.commit()
+    
+    updated_count = result.rowcount
+    
+    return {
+        'message': f'Genre updated to "{genre}" for {updated_count} songs',
+        'genre': genre,
+        'updated_count': updated_count,
+        'total_requested': len(song_ids),
+        'timestamp': datetime.utcnow().isoformat()
+    }
+
+@app.post("/api/admin/songs/auto-genre")
+async def auto_detect_genres(
+    db=Depends(get_db),
+    limit: int = Query(100, le=500)
+):
+    """
+    Auto-detect genre menggunakan AI untuk lagu-lagu yang belum bergenre
+    """
+    from services.genre_detector import genre_detector
+    
+    # Ambil lagu dengan genre None atau Unknown
+    r = await db.execute(
+        select(Song)
+        .where(
+            Song.is_active == True,
+            or_(Song.genre.is_(None), Song.genre == 'Unknown', Song.genre == '')
+        )
+        .limit(limit)
+    )
+    songs = r.scalars().all()
+    
+    if not songs:
+        return {'message': 'No songs need genre detection', 'processed': 0}
+    
+    results = {
+        'processed': 0,
+        'auto_assigned': 0,
+        'set_to_unknown': 0,
+        'details': []
+    }
+    
+    for song in songs:
+        prediction = genre_detector.predict_genre(
+            artist=song.artist or '',
+            title=song.title
+        )
+        
+        if prediction['confidence'] > 0.8:
+            # Auto-assign dengan confidence tinggi
+            song.genre = prediction['genre']
+            results['auto_assigned'] += 1
+            results['details'].append({
+                'song_id': song.id,
+                'title': song.title,
+                'artist': song.artist,
+                'assigned_genre': prediction['genre'],
+                'confidence': prediction['confidence'],
+                'method': prediction['method'],
+                'status': 'auto_assigned'
+            })
+        else:
+            # Set ke Unknown untuk review manual
+            song.genre = 'Unknown'
+            results['set_to_unknown'] += 1
+            results['details'].append({
+                'song_id': song.id,
+                'title': song.title,
+                'artist': song.artist,
+                'predicted_genre': prediction['genre'],
+                'confidence': prediction['confidence'],
+                'status': 'set_to_unknown_for_review'
+            })
+        
+        results['processed'] += 1
+    
+    await db.commit()
+    
+    return results
+
+@app.get("/api/admin/genre-detector/stats")
+async def get_genre_detector_stats():
+    """Get genre detector statistics"""
+    from services.genre_detector import genre_detector
+    return genre_detector.get_stats()
+
+@app.post("/api/admin/genre-detector/add-keyword")
+async def add_genre_keyword(genre: str, keyword: str):
+    """Add keyword to genre detector"""
+    from services.genre_detector import genre_detector
+    success = genre_detector.add_keyword(genre, keyword)
+    return {
+        'success': success,
+        'genre': genre,
+        'keyword': keyword,
+        'message': 'Keyword added' if success else 'Keyword already exists'
+    }
+
+
 # ============================================
 # ADMIN ENDPOINTS
 # ============================================
@@ -459,7 +629,16 @@ async def scan(path: Optional[str] = Query(None), db=Depends(get_db)):
             continue
         nm, art, tit = f.stem, None, f.stem
         if " - " in nm: p = nm.split(" - ", 1); art = p[0].strip(); tit = p[1].strip()
-        db.add(Song(title=tit, artist=art, file_path=str(f), file_format=f.suffix.lower().replace(".", ""), is_active=True)); n += 1
+        # Auto-detect genre dengan AI
+        # Auto-detect genre with AI
+        predicted_genre = 'Unknown'
+        try:
+            from services.genre_detector import genre_detector
+            prediction = genre_detector.predict_genre(artist=art, title=tit)
+            predicted_genre = prediction['genre'] if prediction['confidence'] > 0.8 else 'Unknown'
+        except:
+            pass
+        db.add(Song(title=tit, artist=art, genre=predicted_genre, file_path=str(f), file_format=f.suffix.lower().replace(".", ""), is_active=True))
     await db.commit(); return {"message": f"{n} new songs added", "new_songs": n}
 
 @app.get("/api/admin/stats")
