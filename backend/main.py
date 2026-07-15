@@ -144,8 +144,10 @@ class RoomResponse(BaseModel):
 # ============================================
 # HELPERS
 # ============================================
-def get_password_hash(p: str) -> str:
-    s = secrets.token_hex(16); h = hashlib.sha256(f"{s}{p}".encode()).hexdigest(); return f"{s}${h}"
+def get_password_hash(password: str) -> str:
+    """Hash password using bcrypt via security module"""
+    from security import hash_password
+    return hash_password(password)
 
 def verify_password(plain: str, hashed: str) -> bool:
     """Verify password using bcrypt via security module"""
