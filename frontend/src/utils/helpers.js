@@ -26,9 +26,23 @@ export function formatRemaining(secs) {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
 }
 
+// Backend menyimpan waktu sebagai UTC. String ISO tanpa offset (mis. dari
+// data lama / riwayat) akan dianggap waktu lokal browser oleh new Date()
+// dan bergeser 7 jam (WIB). Helper ini memastikan string tanpa offset
+// diperlakukan sebagai UTC sebelum dikonversi ke zona tampilan.
+export function parseUtcDate(iso) {
+  if (!iso) return null
+  const s = String(iso)
+  const hasOffset = /Z$|[+-]\d{2}:\d{2}$/.test(s)
+  const d = new Date(hasOffset ? s : s + 'Z')
+  return isNaN(d.getTime()) ? null : d
+}
+
 export function formatEndTime(iso) {
-  if (!iso) return '-'
-  return new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+  const d = parseUtcDate(iso)
+  if (!d) return '-'
+  // Tampilkan dalam zona waktu Jakarta (WIB) terlepas dari zona browser
+  return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' })
 }
 
 export function thumbGradient(genre) {

@@ -14,6 +14,7 @@ services:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
+      TZ: Asia/Jakarta
     volumes:
       - ./database/data:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d
@@ -64,6 +65,7 @@ services:
         max-file: "3"
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      TZ: Asia/Jakarta
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
@@ -104,6 +106,7 @@ services:
         max-file: "3"
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      TZ: Asia/Jakarta
       REDIS_URL: redis://karaoke_redis:6379/0
       CELERY_BROKER_URL: redis://karaoke_redis:6379/1
       CELERY_RESULT_BACKEND: redis://karaoke_redis:6379/2
@@ -143,6 +146,7 @@ services:
         max-file: "3"
     command: python -m services.smb_sync
     environment:
+      TZ: Asia/Jakarta
       SMB_HOST: ${SMB_HOST:-192.168.1.108}
       SMB_PORT: ${SMB_PORT:-445}
       SMB_USER: ${SMB_USER:-}
@@ -175,6 +179,7 @@ services:
     command: celery -A celery_app beat --loglevel=warning
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      TZ: Asia/Jakarta
       REDIS_URL: redis://karaoke_redis:6379/0
       CELERY_BROKER_URL: redis://karaoke_redis:6379/1
       CELERY_RESULT_BACKEND: redis://karaoke_redis:6379/2

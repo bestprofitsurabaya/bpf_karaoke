@@ -348,7 +348,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useKaraokeStore } from '@/stores/karaoke'
 import GenreDropdown from '@/components/GenreDropdown.vue'
 import axios from 'axios'
@@ -671,10 +671,20 @@ function formatRemaining(secs) {
   return h > 0 ? `${h}j ${m}m` : `${m} mnt`
 }
 
+// Backend menyimpan waktu UTC; string tanpa offset dianggap waktu lokal oleh
+// new Date() (geser 7 jam di WIB). Perlakukan string tanpa offset sebagai UTC.
+function parseUtcDate(iso) {
+  if (!iso) return null
+  const s = String(iso)
+  const hasOffset = /Z$|[+-]\d{2}:\d{2}$/.test(s)
+  const d = new Date(hasOffset ? s : s + 'Z')
+  return isNaN(d.getTime()) ? null : d
+}
+
 function formatDateTime(iso) {
-  if (!iso) return '-'
-  const d = new Date(iso)
-  return d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  const d = parseUtcDate(iso)
+  if (!d) return '-'
+  return d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' })
 }
 
 // ============================================

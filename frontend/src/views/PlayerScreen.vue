@@ -193,6 +193,17 @@
       <span class="st-end">Berakhir {{ formatEndTime(store.roomSession.session?.end_time) }}</span>
     </div>
 
+    <!-- PERINGATAN SISA 5 MENIT (banner besar + beep) -->
+    <transition name="warn-pop">
+      <div class="session-warning" v-if="sessionWarning">
+        <span class="sw-icon">⚠️</span>
+        <div class="sw-text">
+          <span class="sw-title">WAKTU SESI HAMPIR HABIS</span>
+          <span class="sw-sub">Sesi berakhir dalam <strong>{{ formatRemaining(sessionRemaining) }}</strong></span>
+        </div>
+      </div>
+    </transition>
+
     <!-- CLOCK (bottom left) -->
     <div class="clock-display" v-if="!isIdle">
       <span class="clock-time">{{ currentTime }}</span>
@@ -269,6 +280,51 @@ const sessionRemaining = computed(() => {
 })
 const sessionUrgent = computed(() => sessionRemaining.value > 0 && sessionRemaining.value <= 300)
 
+// Peringatan visual + bunyi saat sisa 5 menit (trigger satu kali per sesi)
+const sessionWarning = ref(false)
+const sessionWarningShown = ref(false)
+let sessionWarningTimer = null
+
+function playBeep(type = 'warning') {
+  // Gunakan AudioContext yang sama (sudah dibuat saat user gesture). Jika
+  // belum ada/belum resume, abaikan pelan-pelan — visual tetap tampil.
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+    const now = audioCtx.currentTime
+    const notes = type === 'end' ? [1046, 784, 523] : [1046, 1046, 784]  // C6 C6 G5 (warning) / C6 G5 C5 (end)
+    notes.forEach((freq, i) => {
+      const osc = audioCtx.createOscillator()
+      const gain = audioCtx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      const t0 = now + i * 0.28
+      gain.gain.setValueAtTime(0.0001, t0)
+      gain.gain.exponentialRampToValueAtTime(0.35, t0 + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.25)
+      osc.connect(gain).connect(audioCtx.destination)
+      osc.start(t0)
+      osc.stop(t0 + 0.3)
+    })
+  } catch (e) { /* autoplay policy: visual tetap tampil */ }
+}
+
+function showSessionWarning() {
+  if (sessionWarningShown.value || !store.roomSession?.active) return
+  sessionWarningShown.value = true
+  sessionWarning.value = true
+  playBeep('warning')
+  clearTimeout(sessionWarningTimer)
+  // Banner tampil ~20 detik, lalu hilang (timer countdown tetap terlihat & berdenyut)
+  sessionWarningTimer = setTimeout(() => { sessionWarning.value = false }, 20000)
+}
+
+function hideSessionWarning() {
+  sessionWarningShown.value = false
+  sessionWarning.value = false
+  clearTimeout(sessionWarningTimer)
+}
+
 // Constants
 const circumference2 = 2 * Math.PI * 52
 
@@ -280,7 +336,7 @@ const countdownOffset2 = computed(() => circumference2 - (countdownSeconds.value
 // Clock
 function updateClock() {
   const now = new Date()
-  currentTime.value = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+  currentTime.value = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' })
 }
 
 // Particles
@@ -661,6 +717,9 @@ function setupSocket() {
     showPlayOverlay.value = false
     progressPct.value = 0
     sessionEnded.value = false  // lagu diputar lagi -> kembali normal
+    // CATATAN: TIDAK me-reset banner peringatan di sini. Jika di-reset, banner
+    // + beep akan muncul ulang setiap lagu berganti selama 5 menit terakhir.
+    // Reset hanya saat: sesi berakhir, sesi baru (room_session active), atau sisa=0.
     
     store.currentSong = {
       song_id: data.song_id,
@@ -702,12 +761,16 @@ function setupSocket() {
     clearInterval(countdownTimer)
     store.currentSong = null
     store.isPlaying = false
+    hideSessionWarning()
+    // Notifikasi suara khas saat sesi berakhir
+    playBeep('end')
   })
 
   // Sesi baru dimulai (admin) -> kembali ke mode normal (QR)
   store.socket.on('room_session', (data) => {
     if (data && data.status === 'active') {
       sessionEnded.value = false
+      hideSessionWarning()
       if (userInteracted.value) generateQR()
     }
   })
@@ -797,7 +860,12 @@ onMounted(async () => {
 
 // Saat sesi habis (sisa 0) -> refetch agar server menutup sesi expired
 watch(sessionRemaining, (val, old) => {
-  if (val === 0 && old > 0) store.fetchRoomSession()
+  // Peringatan sisa 5 menit: trigger sekali saat memasuki 300 detik
+  if (val > 0 && val <= 300) showSessionWarning()
+  if (val === 0 && old > 0) {
+    hideSessionWarning()
+    store.fetchRoomSession()
+  }
 })
 
 onUnmounted(() => {
@@ -806,6 +874,7 @@ onUnmounted(() => {
   clearInterval(clockTimer)
   clearInterval(sessionTimer)
   clearTimeout(volumeOsdTimer)
+  clearTimeout(sessionWarningTimer)
   stopProgressEmitter()
   destroyYtPlayer()
   try { if (mergerNode) mergerNode.disconnect() } catch (e) {}
@@ -956,6 +1025,72 @@ onUnmounted(() => {
   0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
   50% { box-shadow: 0 0 25px 4px rgba(239,68,68,0.6); }
 }
+
+/* PERINGATAN SISA 5 MENIT */
+.session-warning {
+  position: absolute;
+  top: 5.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 1rem 1.8rem;
+  background: linear-gradient(135deg, rgba(220,38,38,0.95), rgba(153,27,27,0.95));
+  border: 2px solid rgba(255,255,255,0.35);
+  border-radius: 1.2rem;
+  box-shadow: 0 0 40px rgba(239,68,68,0.7), 0 10px 30px rgba(0,0,0,0.4);
+  color: white;
+  pointer-events: none;
+  animation: warnShake 0.5s ease-in-out;
+}
+
+.sw-icon {
+  font-size: 2rem;
+  animation: warnBounce 1s ease-in-out infinite;
+}
+
+.sw-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.sw-title {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: rgba(255,255,255,0.85);
+}
+
+.sw-sub {
+  font-size: 1.5rem;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sw-sub strong {
+  color: #fde047;
+  font-size: 1.7rem;
+}
+
+@keyframes warnShake {
+  0%, 100% { transform: translateX(-50%); }
+  20% { transform: translateX(calc(-50% - 8px)); }
+  40% { transform: translateX(calc(-50% + 8px)); }
+  60% { transform: translateX(calc(-50% - 5px)); }
+  80% { transform: translateX(calc(-50% + 5px)); }
+}
+
+@keyframes warnBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.warn-pop-enter-active, .warn-pop-leave-active { transition: opacity 0.35s; }
+.warn-pop-enter-from, .warn-pop-leave-to { opacity: 0; }
 
 /* VIDEO STAGE */
 .video-stage {

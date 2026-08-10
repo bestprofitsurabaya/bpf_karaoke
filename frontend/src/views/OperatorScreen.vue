@@ -348,7 +348,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useKaraokeStore } from '@/stores/karaoke'
-import { formatRemaining, formatEndTime, thumbGradient, formatDuration } from '@/utils/helpers'
+import { formatRemaining, formatEndTime, thumbGradient, formatDuration, parseUtcDate } from '@/utils/helpers'
 import SongCard from '@/components/operator/SongCard.vue'
 import ControlPanel from '@/components/operator/ControlPanel.vue'
 import axios from 'axios'
@@ -454,7 +454,7 @@ const historyGroups = computed(() => {
   const today = new Date(); today.setHours(0, 0, 0, 0)
   const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1)
   for (const h of history.value) {
-    const d = new Date(h.played_at)
+    const d = parseUtcDate(h.played_at) || new Date()
     const day = new Date(d); day.setHours(0, 0, 0, 0)
     let label
     if (day.getTime() === today.getTime()) label = 'Hari Ini'
@@ -704,7 +704,7 @@ function toggleDark() {
 
 // ========== HELPERS ==========
 function formatTime(s) { if (!s || isNaN(s)) return '0:00'; const m = Math.floor(s / 60); return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}` }
-function formatDate(d) { if (!d) return ''; const t = new Date(d); return t.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) }
+function formatDate(d) { const t = parseUtcDate(d); if (!t) return ''; return t.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }) }
 function launchPlayer() { window.open(`${window.location.origin}/player?screen=2&room=${encodeURIComponent(store.roomId)}`, '_blank', 'width=1280,height=720') }
 
 // ========== ROOMS ==========

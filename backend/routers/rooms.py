@@ -30,6 +30,18 @@ def _utc_naive(dt: datetime) -> datetime:
     return dt
 
 
+def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
+    """Serialisasi datetime DB (UTC naive) -> ISO 8601 dengan offset eksplisit
+    (+00:00). Tanpa offset, JS `new Date()` menginterpretasikan string sebagai
+    waktu lokal (WIB, UTC+7) sehingga end_time bergeser 7 jam ke masa lalu
+    dan countdown sesi tidak pernah berjalan."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def _serialize_session(s: Optional[RoomSession]) -> Optional[dict]:
     if not s:
         return None
@@ -40,10 +52,10 @@ def _serialize_session(s: Optional[RoomSession]) -> Optional[dict]:
     return {
         "id": s.id,
         "room_id": s.room_id,
-        "started_at": s.started_at.isoformat() if s.started_at else None,
-        "end_time": s.end_time.isoformat() if s.end_time else None,
+        "started_at": _iso_utc(s.started_at),
+        "end_time": _iso_utc(s.end_time),
         "duration_minutes": s.duration_minutes,
-        "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+        "ended_at": _iso_utc(s.ended_at),
         "status": s.status,
         "remaining_seconds": remaining,
         "created_by": s.created_by,
@@ -136,7 +148,7 @@ async def get_active_rooms(db=Depends(get_db)):
             "queue_count": active_queues.get(room.name, 0),
             "is_busy": active_queues.get(room.name, 0) > 0,
             "session_status": session.status if session else "none",
-            "session_end_time": session.end_time.isoformat() if session and session.end_time else None,
+            "session_end_time": _iso_utc(session.end_time) if session and session.end_time else None,
             "session_remaining_seconds": _serialize_session(session)["remaining_seconds"] if session else 0,
         })
 
