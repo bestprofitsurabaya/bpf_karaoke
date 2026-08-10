@@ -358,11 +358,27 @@ function handleInteraction() {
   if (!userInteracted.value) {
     userInteracted.value = true
   }
+  // Auto-fullscreen saat user gesture (wajib untuk Fullscreen API)
+  requestPlayerFullscreen()
   // Resume AudioContext dalam user gesture (wajib untuk iOS/Chrome)
   resumeAudioContext()
   if (videoPlayer.value && isMuted.value) {
     unmuteVideo()
   }
+}
+
+// Fullscreen otomatis (TV karaoke): dipanggil saat user gesture (tap/start)
+// dan saat lagu mulai diputar. Best-effort: bila browser menolak (bukan dari
+// user gesture), tidak terjadi apa-apa — video tetap tampil di stage aplikasi.
+function requestPlayerFullscreen() {
+  try {
+    const el = document.documentElement
+    if (!document.fullscreenElement) {
+      if (el.requestFullscreen) el.requestFullscreen().catch(() => {})
+      // Fallback Safari/iOS (tidak mendukung requestFullscreen)
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen()
+    }
+  } catch (e) { /* unsupported / denied */ }
 }
 
 function resumeAudioContext() {
@@ -374,6 +390,9 @@ function resumeAudioContext() {
 function initPlayer() {
   userInteracted.value = true
   isIdle.value = false
+  
+  // Auto-fullscreen saat 'Tap to Start' (user gesture)
+  requestPlayerFullscreen()
   
   // Buat & resume SATU AudioContext dalam user gesture (dipakai juga
   // untuk vocal channel routing). Jangan buat context baru di luar gesture.
@@ -497,7 +516,13 @@ function tryCreateYtPlayer() {
       onStateChange: (e) => {
         // YT states: 0=ended, 1=playing, 2=paused, 3=buffering
         if (e.data === 0) onYtEnded()
-        else if (e.data === 1) { ytErrorStreak = 0; showPlayOverlay.value = false; store.isPlaying = true }
+        else if (e.data === 1) {
+          ytErrorStreak = 0
+          showPlayOverlay.value = false
+          store.isPlaying = true
+          // Video YouTube mulai diputar -> pastikan tampil fullscreen
+          requestPlayerFullscreen()
+        }
       },
       onError: () => {
         // Video tidak tersedia (private/deleted). 3x gagal beruntun -> skip
@@ -720,6 +745,9 @@ function setupSocket() {
     // CATATAN: TIDAK me-reset banner peringatan di sini. Jika di-reset, banner
     // + beep akan muncul ulang setiap lagu berganti selama 5 menit terakhir.
     // Reset hanya saat: sesi berakhir, sesi baru (room_session active), atau sisa=0.
+    
+    // Lagu (termasuk YouTube) mulai -> pastikan tampil fullscreen
+    requestPlayerFullscreen()
     
     store.currentSong = {
       song_id: data.song_id,
