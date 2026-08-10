@@ -65,7 +65,9 @@ onMounted(() => {
   setTimeout(() => { isLoading.value = false }, 1800)
   const urlParams = new URLSearchParams(window.location.search)
   store.setScreenType(urlParams.get('screen') || 'operator')
-  store.setRoomId(urlParams.get('room') || 'default')
+  // Hanya set room dari URL jika ada param; jika tidak, pertahankan room yang tersimpan (operator/remote)
+  const roomParam = urlParams.get('room')
+  if (roomParam) store.setRoomId(roomParam)
   store.connectSocket()
 })
 </script>

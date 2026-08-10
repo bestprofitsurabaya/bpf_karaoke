@@ -14,7 +14,8 @@ import secrets
 from datetime import datetime
 from security import hash_password, generate_secure_password, validate_password_strength
 from sqlalchemy import select
-from main import async_session, User, engine, Base
+from database import async_session, engine, Base
+from models import User
 
 async def seed_admin():
     """Create admin account with secure random password"""

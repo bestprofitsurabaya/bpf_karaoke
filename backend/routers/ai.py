@@ -1,22 +1,30 @@
 """
 AI/ML Routes - Mood Detection, Playlist, Recommendations, Smart Search
+PT BESTPROFIT FUTURES SURABAYA
 """
-
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import Optional
+
+from sqlalchemy import select
+
+from database import async_session
+from models import Song
 
 router = APIRouter(prefix="/api/ai", tags=["AI Features"])
+
 
 # Models
 class SearchRequest(BaseModel):
     query: str
     limit: int = 20
 
+
 class PlaylistRequest(BaseModel):
     type: str  # genre, mood, decade, top_hits, smart_mix
     value: Optional[str] = None
     count: int = 15
+
 
 # ============================================
 # MOOD DETECTION
@@ -31,7 +39,7 @@ async def detect_room_mood(room_id: str):
         return result
     except ImportError:
         pass
-    
+
     # Fallback response
     return {
         "current_mood": "happy",
@@ -41,6 +49,7 @@ async def detect_room_mood(room_id: str):
         "predicted_next_mood": "energetic",
         "suggestion": "Suasana ceria! Rekomendasi: Pop Indonesia atau lagu hits terkini"
     }
+
 
 @router.post("/mood/record")
 async def record_mood(
@@ -54,14 +63,15 @@ async def record_mood(
         mood_detector.record_song_play(room_id, genre)
     except ImportError:
         pass
-    
+
     try:
         from services.song_recommender import song_recommender
         song_recommender.record_play(room_id, song_id, genre)
     except ImportError:
         pass
-    
+
     return {"message": "Mood recorded", "room_id": room_id}
+
 
 @router.get("/mood/timeline/{room_id}")
 async def get_mood_timeline(room_id: str, limit: int = 20):
@@ -72,6 +82,7 @@ async def get_mood_timeline(room_id: str, limit: int = 20):
         return {"room_id": room_id, "timeline": timeline, "total": len(timeline)}
     except ImportError:
         return {"room_id": room_id, "timeline": [], "total": 0}
+
 
 # ============================================
 # PLAYLIST GENERATION
@@ -95,12 +106,13 @@ async def quick_playlists():
         ]
     }
 
+
 @router.post("/playlist/generate")
 async def generate_playlist(request: PlaylistRequest):
     """Generate playlist otomatis"""
     try:
         from services.auto_playlist import playlist_generator
-        
+
         if request.type == 'genre':
             result = playlist_generator.generate_by_genre(request.value or 'Pop Indonesia', request.count)
         elif request.type == 'mood':
@@ -115,17 +127,18 @@ async def generate_playlist(request: PlaylistRequest):
             result = playlist_generator.generate_smart_mix(room_mood, request.count)
         else:
             result = {"name": "Unknown", "songs": [], "description": "Invalid type"}
-        
+
         return result
     except ImportError:
         pass
-    
+
     return {
         "name": f"Playlist {request.type}",
         "description": "Auto-generated playlist",
         "songs": [],
         "total_duration_estimate": 0
     }
+
 
 # ============================================
 # SMART SEARCH
@@ -146,13 +159,14 @@ async def smart_search_endpoint(request: SearchRequest):
         }
     except ImportError:
         pass
-    
+
     return {
         "query": request.query,
         "results": [],
         "total_results": 0,
         "did_you_mean": []
     }
+
 
 @router.get("/search/suggest")
 async def search_suggestions(query: str = Query(...)):
@@ -164,6 +178,7 @@ async def search_suggestions(query: str = Query(...)):
     except ImportError:
         return {"query": query, "suggestions": []}
 
+
 # ============================================
 # SONG RECOMMENDATIONS
 # ============================================
@@ -171,12 +186,10 @@ async def search_suggestions(query: str = Query(...)):
 @router.post("/train")
 async def train_models():
     """Train AI models dengan data dari database"""
-    from main import async_session, Song
-    
     async with async_session() as session:
         result = await session.execute(select(Song).where(Song.is_active == True))
         songs = result.scalars().all()
-        
+
         songs_data = [
             {
                 'id': s.id, 'title': s.title,
@@ -185,19 +198,20 @@ async def train_models():
             }
             for s in songs
         ]
-    
+
     try:
         from services.song_recommender import song_recommender
         from services.smart_search import smart_search
         from services.auto_playlist import playlist_generator
-        
+
         song_recommender.train(songs_data)
         smart_search.build_index(songs_data)
         playlist_generator.load_songs(songs_data)
     except ImportError:
         pass
-    
+
     return {"message": "Models trained", "songs_count": len(songs_data)}
+
 
 @router.get("/recommend/{song_id}")
 async def get_recommendations(song_id: int, count: int = Query(10, le=50)):
@@ -209,6 +223,7 @@ async def get_recommendations(song_id: int, count: int = Query(10, le=50)):
     except ImportError:
         return {"song_id": song_id, "recommendations": [], "total": 0}
 
+
 @router.get("/recommend/room/{room_id}")
 async def get_room_recommendations(room_id: str, count: int = Query(10, le=50)):
     """Rekomendasi berdasarkan preferensi room"""
@@ -219,19 +234,21 @@ async def get_room_recommendations(room_id: str, count: int = Query(10, le=50)):
     except ImportError:
         return {"room_id": room_id, "recommendations": []}
 
+
 @router.get("/recommend/mood/{mood}")
 async def get_mood_recommendations(mood: str, count: int = Query(10, le=50)):
     """Rekomendasi berdasarkan mood"""
     valid_moods = ['happy', 'energetic', 'sad', 'relaxed', 'romantic', 'calm']
     if mood not in valid_moods:
         raise HTTPException(400, f"Invalid mood. Choose from: {valid_moods}")
-    
+
     try:
         from services.song_recommender import song_recommender
         recommendations = song_recommender.get_mood_based_recommendations(mood, count)
         return {"mood": mood, "recommendations": recommendations}
     except ImportError:
         return {"mood": mood, "recommendations": []}
+
 
 # ============================================
 # VOICE ANALYSIS
@@ -246,6 +263,7 @@ async def get_voice_stats():
     except ImportError:
         return {"average_score": 75, "notes_sung": 150, "performance_rating": "Bagus! 🌟🌟🌟🌟", "stars": 4}
 
+
 @router.post("/voice/reset")
 async def reset_voice_score():
     """Reset skor vokal"""
@@ -255,6 +273,7 @@ async def reset_voice_score():
     except ImportError:
         pass
     return {"message": "Score reset"}
+
 
 # ============================================
 # INSIGHTS

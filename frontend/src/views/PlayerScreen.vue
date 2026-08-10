@@ -16,28 +16,34 @@
 
     <!-- VIDEO PLAYING STATE -->
     <div class="video-stage" v-if="store.currentSong && store.isPlaying && !isIdle">
-      <video 
-        ref="videoPlayer" 
-        :key="videoKey" 
-        class="video-element"
-        autoplay 
-        playsinline 
-        muted
-        @ended="onVideoEnded" 
-        @error="onVideoError" 
-        @loadeddata="onVideoLoaded"
-        @play="onPlaySuccess"
-      >
-        <source :src="videoSrc" type="video/mp4">
-      </video>
-
-      <!-- Unmute Prompt -->
-      <div class="unmute-prompt" v-if="isMuted" @click.stop="unmuteVideo">
-        <div class="unmute-ring">
-          <span class="unmute-icon">🔊</span>
-        </div>
-        <span class="unmute-text">Tap untuk mengaktifkan suara</span>
+      <!-- Lagu YouTube: putar via embed (youtube-nocookie) -->
+      <div v-if="currentYoutubeId" class="yt-player-stage">
+        <div ref="ytPlayerEl" class="yt-player-el"></div>
       </div>
+      <template v-else>
+        <video 
+          ref="videoPlayer" 
+          :key="videoKey" 
+          class="video-element"
+          autoplay 
+          playsinline 
+          muted
+          @ended="onVideoEnded" 
+          @error="onVideoError" 
+          @loadeddata="onVideoLoaded"
+          @play="onPlaySuccess"
+        >
+          <source :src="videoSrc" type="video/mp4">
+        </video>
+
+        <!-- Unmute Prompt -->
+        <div class="unmute-prompt" v-if="isMuted" @click.stop="unmuteVideo">
+          <div class="unmute-ring">
+            <span class="unmute-icon">🔊</span>
+          </div>
+          <span class="unmute-text">Tap untuk mengaktifkan suara</span>
+        </div>
+      </template>
 
       <!-- Now Playing Overlay -->
       <div class="np-overlay" :class="{ hidden: overlayHidden }">
@@ -45,12 +51,18 @@
           <div class="np-badge">
             <span class="badge-dot"></span>
             NOW PLAYING
+            <span class="eq-bars" aria-hidden="true"><i v-for="n in 4" :key="n"></i></span>
           </div>
         </div>
         <div class="np-bottom">
           <h1 class="np-title">{{ store.currentSong.song_title || '♪' }}</h1>
           <p class="np-artist">{{ store.currentSong.song_artist || '' }}</p>
         </div>
+      </div>
+
+      <!-- Progress bar tipis (gaya TV karaoke komersial) -->
+      <div class="player-progress" aria-hidden="true">
+        <div class="pp-fill" :style="{ width: progressPct + '%' }"></div>
       </div>
 
       <!-- Next Song Ticker -->
@@ -117,11 +129,26 @@
           <p class="countdown-info">Menyiapkan lagu berikutnya...</p>
         </div>
 
+        <!-- Sesi Berakhir -->
+        <div class="session-ended" v-else-if="sessionEnded">
+          <div class="se-icon">🎤</div>
+          <h2 class="se-title">Sesi Berakhir</h2>
+          <p class="se-sub">Terima kasih telah bernyanyi di BPF Karaoke!</p>
+        </div>
+
         <!-- QR Code -->
         <div class="qr-stage" v-else>
           <div class="qr-header">
             <h2>Request Lagu</h2>
             <p>Scan QR Code dari HP Anda</p>
+            <div class="idle-queue-chip" v-if="store.waitingQueue.length > 0">
+              🎵 <strong>{{ store.waitingQueue.length }}</strong> lagu dalam antrian
+            </div>
+            <div class="idle-next-card" v-if="store.waitingQueue.length > 0">
+              <span class="in-label">LAGU BERIKUTNYA</span>
+              <span class="in-title">{{ store.waitingQueue[0]?.song?.title || '...' }}</span>
+              <span class="in-artist">— {{ store.waitingQueue[0]?.song?.artist || '' }}</span>
+            </div>
           </div>
           
           <div class="qr-card">
@@ -159,16 +186,33 @@
       <p class="loading-text">Memuat lagu...</p>
     </div>
 
+    <!-- ROOM SESSION COUNTDOWN (untuk tamu di TV) -->
+    <div class="session-timer" v-if="store.roomSession?.active && store.roomSession.session?.end_time" :class="{ urgent: sessionUrgent }">
+      <span class="st-label">⏱️ SISA WAKTU</span>
+      <span class="st-value">{{ formatRemaining(sessionRemaining) }}</span>
+      <span class="st-end">Berakhir {{ formatEndTime(store.roomSession.session?.end_time) }}</span>
+    </div>
+
     <!-- CLOCK (bottom left) -->
     <div class="clock-display" v-if="!isIdle">
       <span class="clock-time">{{ currentTime }}</span>
     </div>
+
+    <!-- VOLUME OSD (muncul singkat saat operator ubah volume) -->
+    <transition name="osd-fade">
+      <div class="volume-osd" v-if="volumeOsd">
+        <span class="osd-icon">{{ store.currentVolume === 0 ? '🔇' : '🔊' }}</span>
+        <div class="osd-track"><div class="osd-fill" :style="{ width: store.currentVolume + '%' }"></div></div>
+        <span class="osd-val">{{ store.currentVolume }}%</span>
+      </div>
+    </transition>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useKaraokeStore } from '@/stores/karaoke'
+import { formatRemaining, formatEndTime } from '@/utils/helpers'
 import QRCode from 'qrcode'
 
 const store = useKaraokeStore()
@@ -177,6 +221,16 @@ const store = useKaraokeStore()
 const videoPlayer = ref(null)
 const qrCanvas = ref(null)
 const particlesRef = ref(null)
+const ytPlayerEl = ref(null)
+
+// YouTube embed player (lagu yang tidak ada di database)
+const currentYoutubeId = computed(() => {
+  const cs = store.currentSong
+  return cs && cs.file_format === 'youtube' && cs.youtube_id ? cs.youtube_id : ''
+})
+let ytPlayer = null
+let ytApiReady = false
+let ytErrorStreak = 0
 
 // State
 const overlayHidden = ref(false)
@@ -188,14 +242,38 @@ const userInteracted = ref(false)
 const isMuted = ref(true)
 const showPlayOverlay = ref(false)
 const currentTime = ref('')
+const progressPct = ref(0)
+const volumeOsd = ref(false)
+const sessionEnded = ref(false)
 
-let overlayTimer, countdownTimer, clockTimer
+let overlayTimer, countdownTimer, clockTimer, volumeOsdTimer
+
+// Web Audio untuk vocal channel routing (Kiri/Kanan/Stereo)
+// SATU AudioContext dipakai bersama (dibuat/diresume dalam user gesture)
+let audioCtx = null
+let sourceNode = null
+let splitterNode = null
+let mergerNode = null
+let graphElement = null
+let pendingSeek = 0
+
+// Countdown sesi room (durasi pemakaian) untuk tamu
+const sessionNow = ref(Date.now())
+let sessionTimer = null
+
+const sessionRemaining = computed(() => {
+  const s = store.roomSession?.session
+  if (!store.roomSession?.active || !s?.end_time) return 0
+  const end = new Date(s.end_time).getTime()
+  return Math.max(0, Math.floor((end - sessionNow.value) / 1000))
+})
+const sessionUrgent = computed(() => sessionRemaining.value > 0 && sessionRemaining.value <= 300)
 
 // Constants
 const circumference2 = 2 * Math.PI * 52
 
 // Computed
-const videoSrc = computed(() => store.currentSong?.song_id ? `/api/media/stream/${store.currentSong.song_id}` : '')
+const videoSrc = computed(() => store.currentSong?.song_id ? `/api/media/stream/${store.currentSong.song_id}?key=${store.keyShift}` : '')
 const remoteUrl = computed(() => `${window.location.origin}/remote?room=${store.roomId}`)
 const countdownOffset2 = computed(() => circumference2 - (countdownSeconds.value / 5) * circumference2)
 
@@ -224,19 +302,28 @@ function handleInteraction() {
   if (!userInteracted.value) {
     userInteracted.value = true
   }
+  // Resume AudioContext dalam user gesture (wajib untuk iOS/Chrome)
+  resumeAudioContext()
   if (videoPlayer.value && isMuted.value) {
     unmuteVideo()
   }
+}
+
+function resumeAudioContext() {
+  try {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume()
+  } catch(e) {}
 }
 
 function initPlayer() {
   userInteracted.value = true
   isIdle.value = false
   
-  // Audio context untuk permission
+  // Buat & resume SATU AudioContext dalam user gesture (dipakai juga
+  // untuk vocal channel routing). Jangan buat context baru di luar gesture.
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)()
-    ctx.resume()
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    audioCtx.resume()
   } catch(e) {}
   
   // Trigger queue fetch
@@ -252,6 +339,7 @@ function initPlayer() {
 
 function unmuteVideo() {
   if (videoPlayer.value) {
+    resumeAudioContext()
     videoPlayer.value.muted = false
     isMuted.value = false
     videoPlayer.value.play().catch(() => {})
@@ -298,6 +386,8 @@ function startCountdown() {
 
 // Video Events
 function onVideoEnded() {
+  stopProgressEmitter()
+  progressPct.value = 100
   isIdle.value = true
   startCountdown()
   
@@ -309,16 +399,181 @@ function onVideoEnded() {
   }
 }
 
+// ============================================
+// YOUTUBE EMBED PLAYBACK (YouTube IFrame API)
+// ============================================
+function loadYouTubeApi() {
+  if (window.YT && window.YT.Player) { ytApiReady = true; return }
+  if (document.getElementById('yt-iframe-api')) return
+  const tag = document.createElement('script')
+  tag.id = 'yt-iframe-api'
+  tag.src = 'https://www.youtube.com/iframe_api'
+  document.head.appendChild(tag)
+  window.onYouTubeIframeAPIReady = () => { ytApiReady = true; tryCreateYtPlayer() }
+}
+
+function destroyYtPlayer() {
+  if (ytPlayer) {
+    try { ytPlayer.destroy() } catch (e) {}
+    ytPlayer = null
+  }
+}
+
+function tryCreateYtPlayer() {
+  const id = currentYoutubeId.value
+  if (!id || !ytApiReady || !ytPlayerEl.value || !window.YT?.Player) return
+  ytErrorStreak = 0
+  destroyYtPlayer()
+  ytPlayer = new window.YT.Player(ytPlayerEl.value, {
+    videoId: id,
+    playerVars: {
+      autoplay: 1,
+      rel: 0,
+      playsinline: 1,
+      modestbranding: 1,
+      origin: window.location.origin
+    },
+    events: {
+      onReady: (e) => {
+        try { e.target.playVideo() } catch (err) {}
+        startProgressEmitter()
+      },
+      onStateChange: (e) => {
+        // YT states: 0=ended, 1=playing, 2=paused, 3=buffering
+        if (e.data === 0) onYtEnded()
+        else if (e.data === 1) { ytErrorStreak = 0; showPlayOverlay.value = false; store.isPlaying = true }
+      },
+      onError: () => {
+        // Video tidak tersedia (private/deleted). 3x gagal beruntun -> skip
+        // lagu ini (jangan auto-advance terus menerus melewati antrian rusak).
+        ytErrorStreak++
+        if (ytErrorStreak >= 3) {
+          ytErrorStreak = 0
+          stopProgressEmitter()
+          destroyYtPlayer()
+          isIdle.value = true
+          store.isPlaying = false
+          if (store.socket && store.isConnected) {
+            store.socket.emit('skip_song', {
+              room_id: store.roomId,
+              queue_id: store.currentSong?.queue_id
+            })
+          }
+        } else {
+          onYtEnded()
+        }
+      }
+    }
+  })
+}
+
+function onYtEnded() {
+  stopProgressEmitter()
+  destroyYtPlayer()
+  isIdle.value = true
+  startCountdown()
+  if (store.socket && store.isConnected) {
+    store.socket.emit('song_ended', {
+      room_id: store.roomId,
+      queue_id: store.currentSong?.queue_id
+    })
+  }
+}
+
+// Buat/hancurkan player YouTube saat lagu berganti atau di-resume
+watch(currentYoutubeId, async (id) => {
+  if (id) {
+    isIdle.value = false
+    await nextTick()
+    loadYouTubeApi()
+    tryCreateYtPlayer()
+  } else {
+    stopProgressEmitter()
+    destroyYtPlayer()
+  }
+})
+
+watch(() => store.isPlaying, (playing) => {
+  // Setelah pause (iframe terlepas dari DOM) -> buat ulang saat resume
+  if (playing && currentYoutubeId.value) {
+    nextTick(() => { loadYouTubeApi(); tryCreateYtPlayer() })
+  }
+})
+
 function onVideoError(e) {
-  console.error('Video error:', e.target.error?.message)
+  const code = e.target?.error?.code
+  console.error('Video error:', code, e.target.error?.message)
+  stopProgressEmitter()
   isIdle.value = true
   if (userInteracted.value) generateQR()
+  // ANTI-NYANGKUT: lagu gagal dimuat harus tetap maju ke lagu berikutnya.
+  // Hanya error FATAL (2=network, 4=src tidak didukung) yang memajukan lagu;
+  // MEDIA_ERR_ABORTED (1) terjadi saat elemen diganti normal (ganti pitch/key).
+  const fatal = code === 2 || code === 4
+  if (fatal && store.socket && store.isConnected && store.currentSong?.queue_id) {
+    store.socket.emit('song_ended', {
+      room_id: store.roomId,
+      queue_id: store.currentSong.queue_id
+    })
+  }
+}
+
+
+// Emit playback progress setiap 1 detik (video lokal ATAU YouTube)
+let progressInterval
+function startProgressEmitter() {
+  clearInterval(progressInterval)
+  progressInterval = setInterval(() => {
+    if (!store.isPlaying) return
+    if (currentYoutubeId.value && ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
+      try {
+        const current = ytPlayer.getCurrentTime() || 0
+        const duration = ytPlayer.getDuration() || 0
+        const pct = duration > 0 ? (current / duration) * 100 : 0
+        progressPct.value = pct
+        if (store.socket && store.isConnected) {
+          store.socket.emit('playback_progress', {
+            room_id: store.roomId,
+            current_time: current,
+            duration: duration,
+            percentage: pct,
+            song_id: store.currentSong?.song_id
+          })
+        }
+      } catch (e) {}
+    } else if (videoPlayer.value) {
+      const current = videoPlayer.value.currentTime || 0
+      const duration = videoPlayer.value.duration || 0
+      const pct = duration > 0 ? (current / duration) * 100 : 0
+      progressPct.value = pct
+      if (store.socket && store.isConnected) {
+        store.socket.emit('playback_progress', {
+          room_id: store.roomId,
+          current_time: current,
+          duration: duration,
+          percentage: pct,
+          song_id: store.currentSong?.song_id
+        })
+      }
+    }
+  }, 1000)
+}
+function stopProgressEmitter() {
+  clearInterval(progressInterval)
 }
 
 function onVideoLoaded() {
   if (videoPlayer.value) {
     videoPlayer.value.muted = true
     isMuted.value = true
+    // Terapkan volume room & vocal mode pada elemen video baru
+    videoPlayer.value.volume = Math.max(0, Math.min(1, (store.currentVolume || 80) / 100))
+    if (store.vocalMode && store.vocalMode !== 'stereo') ensureAudioGraph()
+    // Kembalikan posisi playback setelah reload (mis. saat pitch/key berubah)
+    if (pendingSeek > 0) {
+      try { videoPlayer.value.currentTime = pendingSeek } catch (e) {}
+      pendingSeek = 0
+    }
     videoPlayer.value.play()
       .then(() => {
         if (userInteracted.value) setTimeout(unmuteVideo, 800)
@@ -326,6 +581,7 @@ function onVideoLoaded() {
       .catch(() => {
         showPlayOverlay.value = true
       })
+    startProgressEmitter()
   }
   
   overlayHidden.value = false
@@ -337,6 +593,63 @@ function onPlaySuccess() {
   showPlayOverlay.value = false
 }
 
+// ============================================
+// WEB AUDIO - VOCAL CHANNEL ROUTING
+// Stereo = 2 kanal, Kiri = hanya kanal 0, Kanan = hanya kanal 1
+// ============================================
+function ensureAudioGraph() {
+  const el = videoPlayer.value
+  if (!el) return
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume()
+
+  // Elemen video baru -> buat source baru (1 source per elemen)
+  if (sourceNode && graphElement !== el) {
+    try { sourceNode.disconnect() } catch (e) {}
+    sourceNode = null
+    splitterNode = null
+  }
+
+  if (!sourceNode) {
+    try {
+      sourceNode = audioCtx.createMediaElementSource(el)
+      graphElement = el
+      splitterNode = audioCtx.createChannelSplitter(2)
+      sourceNode.connect(splitterNode)
+    } catch (e) {
+      console.error('Audio graph error:', e)
+      return
+    }
+  }
+  applyVocalRouting()
+}
+
+function applyVocalRouting() {
+  if (!audioCtx || !splitterNode) return
+  try { splitterNode.disconnect() } catch (e) {}
+  // Lepas merger lama agar tidak bocor (tetap tersambung ke destination)
+  if (mergerNode) {
+    try { mergerNode.disconnect() } catch (e) {}
+    mergerNode = null
+  }
+  const merger = audioCtx.createChannelMerger(2)
+  mergerNode = merger
+  const mode = store.vocalMode || 'stereo'
+  if (mode === 'left') {
+    splitterNode.connect(merger, 0, 0)
+    splitterNode.connect(merger, 0, 1)
+  } else if (mode === 'right') {
+    splitterNode.connect(merger, 1, 0)
+    splitterNode.connect(merger, 1, 1)
+  } else {
+    splitterNode.connect(merger, 0, 0)
+    splitterNode.connect(merger, 1, 1)
+  }
+  merger.connect(audioCtx.destination)
+}
+
 // Socket Events
 function setupSocket() {
   if (!store.socket) return
@@ -346,12 +659,16 @@ function setupSocket() {
     isCountingDown.value = false
     clearInterval(countdownTimer)
     showPlayOverlay.value = false
+    progressPct.value = 0
+    sessionEnded.value = false  // lagu diputar lagi -> kembali normal
     
     store.currentSong = {
       song_id: data.song_id,
       queue_id: data.queue_id,
       song_title: '',
       song_artist: '',
+      file_format: '',
+      youtube_id: '',
       auto_play: data.auto_play || false
     }
     store.isPlaying = true
@@ -376,19 +693,72 @@ function setupSocket() {
     store.isPlaying = false
     if (userInteracted.value) generateQR()
   })
+
+  // Sesi room berakhir: tampilkan layar 'Sesi Berakhir' (bukan QR)
+  store.socket.on('session_ended', () => {
+    sessionEnded.value = true
+    isIdle.value = true
+    isCountingDown.value = false
+    clearInterval(countdownTimer)
+    store.currentSong = null
+    store.isPlaying = false
+  })
+
+  // Sesi baru dimulai (admin) -> kembali ke mode normal (QR)
+  store.socket.on('room_session', (data) => {
+    if (data && data.status === 'active') {
+      sessionEnded.value = false
+      if (userInteracted.value) generateQR()
+    }
+  })
+
+  // Vocal channel (Kiri/Kanan/Stereo) dari operator
+  store.socket.on('vocal', (data) => {
+    store.vocalMode = data.channel || 'stereo'
+    ensureAudioGraph()
+  })
+
+  // Volume dari operator (simpan ke store agar bertahan saat video reload)
+  store.socket.on('vol', (data) => {
+    store.currentVolume = Number(data.volume) || 80
+    if (videoPlayer.value) {
+      videoPlayer.value.volume = Math.max(0, Math.min(1, store.currentVolume / 100))
+    }
+    // OSD volume singkat di TV (feel karaoke komersial)
+    volumeOsd.value = true
+    clearTimeout(volumeOsdTimer)
+    volumeOsdTimer = setTimeout(() => { volumeOsd.value = false }, 1500)
+  })
+
+  // Pitch/key shift: reload video dengan key baru, lalu kembali ke posisi semula
+  store.socket.on('key_change', (data) => {
+    const shift = Number(data.key_shift) || 0
+    const wasPlaying = store.isPlaying
+    const pos = videoPlayer.value?.currentTime || 0
+    store.keyShift = shift
+    if (wasPlaying && store.currentSong?.song_id) {
+      pendingSeek = pos
+      videoKey.value++
+    }
+  })
 }
 
 async function fetchSongDetail(songId) {
   try {
-    const res = await fetch(`/api/songs?limit=1000`)
-    const songs = await res.json()
-    const song = songs.find(s => s.id === songId)
+    const res = await fetch(`/api/songs/${songId}`)
+    const song = await res.json()
     if (song && store.currentSong) {
       store.currentSong.song_title = song.title
       store.currentSong.song_artist = song.artist || ''
+      store.currentSong.file_format = song.file_format || ''
+      store.currentSong.youtube_id = (song.file_format === 'youtube' && String(song.file_path || '').startsWith('yt:'))
+        ? String(song.file_path).slice(3) : ''
     }
   } catch(e) {}
 }
+
+// Reset progress bar saat berganti lagu (jalur mana pun: play event, fetchQueue)
+watch(() => store.currentSong?.song_id, () => { progressPct.value = 0 })
 
 // Watch idle state
 watch(isIdle, async (idle) => {
@@ -411,6 +781,7 @@ onMounted(async () => {
   store.setRoomId(roomParam)
   store.connectSocket()
   store.fetchQueue()
+  store.fetchRoomSession()
   setupSocket()
   
   if (store.socket) {
@@ -420,12 +791,26 @@ onMounted(async () => {
   
   updateClock()
   clockTimer = setInterval(updateClock, 10000)
+  // Tick countdown sesi room tiap detik (hanya saat ada sesi aktif)
+  sessionTimer = setInterval(() => { if (store.roomSession?.active) sessionNow.value = Date.now() }, 1000)
+})
+
+// Saat sesi habis (sisa 0) -> refetch agar server menutup sesi expired
+watch(sessionRemaining, (val, old) => {
+  if (val === 0 && old > 0) store.fetchRoomSession()
 })
 
 onUnmounted(() => {
   clearTimeout(overlayTimer)
   clearInterval(countdownTimer)
   clearInterval(clockTimer)
+  clearInterval(sessionTimer)
+  clearTimeout(volumeOsdTimer)
+  stopProgressEmitter()
+  destroyYtPlayer()
+  try { if (mergerNode) mergerNode.disconnect() } catch (e) {}
+  try { if (sourceNode) sourceNode.disconnect() } catch (e) {}
+  try { if (audioCtx) audioCtx.close() } catch (e) {}
 })
 </script>
 
@@ -516,6 +901,62 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+/* ROOM SESSION COUNTDOWN */
+.session-timer {
+  position: absolute;
+  top: 1.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 1.1rem;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(15px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 2rem;
+  color: white;
+  pointer-events: none;
+  transition: all 0.4s;
+}
+
+.st-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: rgba(255,255,255,0.6);
+}
+
+.st-value {
+  font-size: 1.35rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+  color: #4ade80;
+}
+
+.st-end {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: rgba(255,255,255,0.5);
+}
+
+/* Urgent: sisa <= 5 menit */
+.session-timer.urgent {
+  background: rgba(220, 38, 38, 0.85);
+  border-color: rgba(255,255,255,0.25);
+  animation: urgentPulse 1s ease-in-out infinite;
+}
+.session-timer.urgent .st-value { color: #fff; }
+.session-timer.urgent .st-label { color: rgba(255,255,255,0.85); }
+.session-timer.urgent .st-end { color: rgba(255,255,255,0.75); }
+
+@keyframes urgentPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+  50% { box-shadow: 0 0 25px 4px rgba(239,68,68,0.6); }
+}
+
 /* VIDEO STAGE */
 .video-stage {
   position: absolute;
@@ -531,6 +972,25 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+/* YOUTUBE EMBED STAGE */
+.yt-player-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+.yt-player-el {
+  width: 100%;
+  height: 100%;
+}
+.yt-player-el iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
 }
 
 /* UNMUTE PROMPT */
@@ -681,6 +1141,160 @@ onUnmounted(() => {
 .ticker-artist {
   color: rgba(255,255,255,0.5);
 }
+
+/* PROGRESS BAR (bawah, tipis) */
+.player-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  z-index: 6;
+  background: rgba(255,255,255,0.08);
+}
+.pp-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ef4444, #f59e0b, #3b82f6);
+  box-shadow: 0 0 12px rgba(239,68,68,0.6);
+  transition: width 0.8s linear;
+}
+
+/* EQUALIZER (di badge NOW PLAYING) */
+.eq-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+  margin-left: 0.35rem;
+}
+.eq-bars i {
+  width: 3px;
+  height: 100%;
+  background: linear-gradient(180deg, #f59e0b, #ef4444);
+  border-radius: 1px;
+  animation: eqBounce 0.9s ease-in-out infinite;
+}
+.eq-bars i:nth-child(2) { animation-delay: 0.15s; }
+.eq-bars i:nth-child(3) { animation-delay: 0.3s; }
+.eq-bars i:nth-child(4) { animation-delay: 0.45s; }
+@keyframes eqBounce {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+
+/* IDLE: chip jumlah antrian */
+.idle-queue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  padding: 0.45rem 1.1rem;
+  background: rgba(239,68,68,0.12);
+  border: 1px solid rgba(239,68,68,0.35);
+  border-radius: 2rem;
+  color: rgba(255,255,255,0.85);
+  font-size: 0.85rem;
+}
+.idle-queue-chip strong {
+  color: #f87171;
+  font-size: 1rem;
+}
+
+/* IDLE: kartu lagu berikutnya */
+.idle-next-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  margin-top: 0.9rem;
+  padding: 0.7rem 1.4rem;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 1rem;
+  animation: fadeIn 0.4s ease-out;
+}
+.in-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: #f59e0b;
+}
+.in-title {
+  color: white;
+  font-size: 1.05rem;
+  font-weight: 700;
+  max-width: 340px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.in-artist {
+  color: rgba(255,255,255,0.5);
+  font-size: 0.8rem;
+}
+
+/* IDLE: sesi berakhir */
+.session-ended {
+  text-align: center;
+  animation: fadeIn 0.6s ease-out;
+}
+.se-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+  animation: pulse 2s infinite;
+}
+.se-title {
+  font-size: 2.5rem;
+  font-weight: 900;
+  color: white;
+  letter-spacing: -0.5px;
+  margin-bottom: 0.4rem;
+}
+.se-sub {
+  color: rgba(255,255,255,0.5);
+  font-size: 1rem;
+}
+
+/* VOLUME OSD */
+.volume-osd {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.8rem 1.4rem;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(15px);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 1rem;
+  color: white;
+  pointer-events: none;
+}
+.osd-icon { font-size: 1.5rem; }
+.osd-track {
+  width: 160px;
+  height: 6px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.osd-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #ef4444);
+  border-radius: 3px;
+  transition: width 0.15s;
+}
+.osd-val {
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+}
+.osd-fade-enter-active, .osd-fade-leave-active { transition: opacity 0.25s, transform 0.25s; }
+.osd-fade-enter-from, .osd-fade-leave-to { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
 
 /* IDLE STAGE */
 .idle-stage {

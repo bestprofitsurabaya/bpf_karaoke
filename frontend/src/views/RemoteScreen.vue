@@ -63,6 +63,7 @@
       <button @click="setFilter('Pop Indonesia')" class="mood-chip pop">🇮🇩 Pop</button>
       <button @click="setFilter('Dangdut')" class="mood-chip dangdut">🎶 Dangdut</button>
       <button @click="setFilter('K-Pop')" class="mood-chip kpop">🇰🇷 K-Pop</button>
+      <button @click="toggleYoutubeMode" class="mood-chip yt" :class="{ on: store.youtubeMode }">▶️ YouTube</button>
       <button @click="clearAll" class="mood-chip all">🔥 Semua</button>
     </div>
 
@@ -75,27 +76,54 @@
         </div>
       </div>
 
-      <div v-for="song in filteredSongs" :key="song.id" class="song-item" :class="{ 'is-added': addedSongs.has(song.id) }" @click="addSong(song)">
-        <div class="song-thumb" :style="{ background: thumbColor(song.genre) }">
-          <span class="thumb-emoji">🎵</span>
-          <span v-if="addedSongs.has(song.id)" class="thumb-check">✓</span>
-        </div>
-        <div class="song-detail">
-          <div class="song-title">{{ song.title }}</div>
-          <div class="song-artist">{{ song.artist || 'Unknown' }}</div>
-          <div class="song-meta">
-            <span v-if="song.genre" class="meta-genre">{{ song.genre }}</span>
-            <span class="meta-plays">▶ {{ song.play_count }}x</span>
+      <!-- LAGU LOKAL (database) -->
+      <template v-if="!showYoutube">
+        <div v-for="song in filteredSongs" :key="song.id" class="song-item" :class="{ 'is-added': addedSongs.has(song.id) }" @click="addSong(song)">
+          <div class="song-thumb" :style="{ background: thumbColor(song.genre) }">
+            <span class="thumb-emoji">🎵</span>
+            <span v-if="addedSongs.has(song.id)" class="thumb-check">✓</span>
           </div>
+          <div class="song-detail">
+            <div class="song-title">{{ song.title }}</div>
+            <div class="song-artist">{{ song.artist || 'Unknown' }}</div>
+            <div class="song-meta">
+              <span v-if="song.genre" class="meta-genre">{{ song.genre }}</span>
+              <span class="meta-plays">▶ {{ song.play_count }}x</span>
+            </div>
+          </div>
+          <button class="btn-add-song" :class="{ added: addedSongs.has(song.id) }" @click.stop="addSong(song)">
+            {{ addedSongs.has(song.id) ? '✓' : '+' }}
+          </button>
         </div>
-        <button class="btn-add-song" :class="{ added: addedSongs.has(song.id) }" @click.stop="addSong(song)">
-          {{ addedSongs.has(song.id) ? '✓' : '+' }}
-        </button>
-      </div>
 
-      <div v-if="!isLoading && filteredSongs.length === 0" class="empty-state">
-        <span class="empty-emoji">🔍</span><h3>Lagu tidak ditemukan</h3><p>Coba kata kunci lain</p>
-      </div>
+        <div v-if="!isLoading && filteredSongs.length === 0" class="empty-state">
+          <span class="empty-emoji">🔍</span><h3>Lagu tidak ditemukan</h3>
+          <p>Coba kata kunci lain, atau <button class="link-btn" @click="toggleYoutubeMode">cari di YouTube ▶️</button></p>
+        </div>
+      </template>
+
+      <!-- HASIL YOUTUBE (lagu yang tidak ada di database) -->
+      <template v-else>
+        <div v-if="store.youtubeSearching" class="empty-state">
+          <div class="spinner-ring"></div><p style="margin-top:0.6rem">Mencari di YouTube...</p>
+        </div>
+        <div v-else-if="store.youtubeError" class="empty-state">
+          <span class="empty-emoji">⚠️</span><h3>YouTube tidak tersedia</h3><p>{{ store.youtubeError }}</p>
+        </div>
+        <div v-else-if="store.youtubeResults.length === 0" class="empty-state">
+          <span class="empty-emoji">▶️</span><h3>Tidak ditemukan di YouTube</h3><p>Coba kata kunci lain</p>
+        </div>
+        <div v-for="r in store.youtubeResults" :key="r.youtube_id" class="song-item yt-item" :class="{ 'is-added': addedYt.has(r.youtube_id) }" @click="addYouTube(r)">
+          <img :src="r.thumbnail" :alt="r.title" class="yt-thumb" loading="lazy" />
+          <div class="song-detail">
+            <div class="song-title">{{ r.title }}</div>
+            <div class="song-artist">{{ r.artist || 'YouTube' }}<span v-if="r.duration" class="yt-dur">· {{ formatDuration(r.duration) }}</span></div>
+          </div>
+          <button class="btn-add-song" :class="{ added: addedYt.has(r.youtube_id) }" @click.stop="addYouTube(r)">
+            {{ addedYt.has(r.youtube_id) ? '✓' : '+' }}
+          </button>
+        </div>
+      </template>
     </div>
 
     <!-- MY QUEUE FAB -->
@@ -130,6 +158,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useKaraokeStore } from '@/stores/karaoke'
 import axios from 'axios'
 import QRCode from 'qrcode'
+import { formatDuration } from '@/utils/helpers'
 
 const store = useKaraokeStore()
 
@@ -137,14 +166,20 @@ const searchQuery = ref('')
 const isLoading = ref(false)
 const songs = ref([])
 const addedSongs = ref(new Set())
+const addedYt = ref(new Set())
+const showYoutube = computed(() => store.youtubeMode && searchQuery.value)
 const showMyQueue = ref(false)
 const showRoomQR = ref(false)
 const toastVisible = ref(false)
 const toastMessage = ref('')
 const qrCanvas = ref(null)
 
+// Identitas tamu unik (persisten) untuk memisahkan "Antrian Saya" per pengguna
+const guestId = ref(localStorage.getItem('karaoke_guest_id') || 'guest-' + Math.random().toString(36).slice(2, 10))
+if (!localStorage.getItem('karaoke_guest_id')) localStorage.setItem('karaoke_guest_id', guestId.value)
+
 const remoteUrl = computed(() => `${window.location.origin}/remote?room=${store.roomId}`)
-const myQueue = computed(() => store.queue.filter(q => q.status === 'waiting'))
+const myQueue = computed(() => store.queue.filter(q => q.status === 'waiting' && q.requester_name === guestId.value))
 const myQueueCount = computed(() => myQueue.value.length)
 const filteredSongs = computed(() => songs.value)
 
@@ -189,15 +224,39 @@ async function fetchSongs() {
 }
 
 let searchTimer
-function onSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => fetchSongs(), 400) }
-function clearSearch() { searchQuery.value = ''; fetchSongs() }
+function onSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(() => { if (store.youtubeMode) store.youtubeSearch(searchQuery.value); else fetchSongs() }, 400) }
+function clearSearch() { searchQuery.value = ''; if (store.youtubeMode) store.clearYoutube(); else fetchSongs() }
+function toggleYoutubeMode() {
+  store.youtubeMode = !store.youtubeMode
+  addedYt.value = new Set()
+  if (store.youtubeMode) {
+    store.clearYoutube()
+    if (searchQuery.value) store.youtubeSearch(searchQuery.value)
+  } else {
+    fetchSongs()
+  }
+}
+async function addYouTube(r) {
+  if (addedYt.value.has(r.youtube_id)) return
+  const inQ = store.waitingQueue.some(q => q.song?.file_path === `yt:${r.youtube_id}`)
+  if (inQ) { showToast('Lagu ini sudah di antrian'); return }
+  const res = await store.addYouTubeToQueue(r, guestId.value)
+  if (res) {
+    addedYt.value.add(r.youtube_id)
+    showToast(`✅ "${res.title}" ditambahkan!`)
+    setTimeout(() => addedYt.value.delete(r.youtube_id), 3000)
+    if (navigator.vibrate) navigator.vibrate(50)
+  } else {
+    showToast('❌ Gagal menambah lagu')
+  }
+}
 function setFilter(genre) { store.selectedGenre = store.selectedGenre === genre ? null : genre; fetchSongs() }
-function setMood(mood) { store.selectedGenre = null; searchQuery.value = ''; fetchSongs(); showToast(`🎵 Menampilkan lagu ${mood}!`) }
-function clearAll() { store.selectedGenre = null; searchQuery.value = ''; fetchSongs() }
+function setMood(mood) { store.selectedGenre = null; searchQuery.value = ''; store.youtubeMode = false; fetchSongs(); showToast(`🎵 Menampilkan lagu ${mood}!`) }
+function clearAll() { store.selectedGenre = null; searchQuery.value = ''; store.youtubeMode = false; store.clearYoutube(); fetchSongs() }
 
 async function addSong(song) {
   if (addedSongs.value.has(song.id)) return
-  const ok = await store.addToQueue(song.id)
+  const ok = await store.addToQueue(song.id, guestId.value)
   if (ok) { addedSongs.value.add(song.id); showToast(`✅ "${song.title}" ditambahkan!`); setTimeout(() => addedSongs.value.delete(song.id), 3000); if (navigator.vibrate) navigator.vibrate(50) }
 }
 
@@ -292,6 +351,15 @@ onMounted(async () => { store.setScreenType('remote'); store.fetchQueue(); await
 /* EMPTY */
 .empty-state { text-align: center; padding: 3rem 1rem; color: #94a3b8; }
 .empty-emoji { font-size: 3rem; display: block; margin-bottom: 0.5rem; }
+.link-btn { background: none; border: none; color: #ef4444; font-weight: 700; cursor: pointer; font-size: inherit; text-decoration: underline; }
+
+/* YOUTUBE */
+.mood-chip.yt { background: #fee2e2; color: #b91c1c; }
+.mood-chip.yt.on { background: #ef4444; color: #fff; box-shadow: 0 4px 12px rgba(239,68,68,0.4); }
+.yt-item .yt-thumb { width: 42px; height: 42px; border-radius: 10px; object-fit: cover; flex-shrink: 0; background: #f1f5f9; }
+.yt-dur { color: #3b82f6; font-weight: 600; }
+.spinner-ring { width: 30px; height: 30px; border: 3px solid #e2e8f0; border-top-color: #ef4444; border-radius: 50%; margin: 0 auto; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* FAB */
 .fab-queue { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #ef4444, #dc2626); color: white; border: none; padding: 0.7rem 1.5rem; border-radius: 3rem; font-weight: 700; font-size: 0.85rem; cursor: pointer; box-shadow: 0 10px 25px rgba(239,68,68,0.4); display: flex; align-items: center; gap: 0.5rem; z-index: 50; animation: bounceIn 0.5s ease-out; }

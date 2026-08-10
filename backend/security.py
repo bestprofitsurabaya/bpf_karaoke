@@ -24,7 +24,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # ============================================
 # JWT CONFIGURATION
 # ============================================
-JWT_SECRET = os.getenv("JWT_SECRET", secrets.token_urlsafe(64))
+# Fail-fast: jangan pernah memakai secret random/acak otomatis.
+# Jika JWT_SECRET tidak di-set, aplikasi menolak start (bukan diam-diam
+# mengacak secret yang membuat semua token invalid saat restart).
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable is required (minimal 32 karakter). "
+        "Set di .env / docker-compose sebelum menjalankan aplikasi."
+    )
 JWT_ALGORITHM = "HS256"
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

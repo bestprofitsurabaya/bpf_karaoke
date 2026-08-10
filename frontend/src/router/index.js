@@ -8,6 +8,12 @@ const routes = [
     meta: { title: 'BPF Karaoke - Home' }
   },
   {
+    path: '/rooms',
+    name: 'Rooms',
+    component: () => import('@/views/RoomSelector.vue'),
+    meta: { title: 'BPF Karaoke - Pilih Room' }
+  },
+  {
     path: '/operator',
     name: 'Operator',
     component: () => import('@/views/OperatorScreen.vue'),

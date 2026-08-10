@@ -248,6 +248,16 @@ const handleLogin = async () => {
       password: password.value
     })
     
+    // ISO 27001 A.9.2.4: user wajib ganti password saat login pertama
+    if (response.data.status === 'requires_password_change') {
+      localStorage.setItem('temp_token', response.data.temp_token)
+      router.push({
+        path: '/force-change-password',
+        query: { temp_token: response.data.temp_token }
+      })
+      return
+    }
+    
     localStorage.setItem('auth_token', response.data.access_token)
     localStorage.setItem('user', JSON.stringify(response.data.user))
     

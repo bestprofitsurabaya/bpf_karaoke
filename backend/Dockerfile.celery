@@ -18,5 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy aplikasi
 COPY . .
 
-# Default command untuk Celery worker
-CMD ["celery", "-A", "celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+# Default command untuk Celery worker.
+# PENTING: -Q wajib agar worker mengonsumsi SEMUA queue (task_routes mengirim
+# transcode->transcoding, scan->maintenance, dll). Tanpa -Q, worker hanya baca
+# queue 'celery' dan semua task rute terkatung-katung (bug bawaan lama).
+CMD ["celery", "-A", "celery_app", "worker", "--loglevel=info", "--concurrency=4", "-Q", "celery,transcoding,maintenance,ai_heavy"]

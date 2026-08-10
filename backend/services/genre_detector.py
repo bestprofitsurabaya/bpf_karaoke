@@ -291,6 +291,82 @@ class GenreDetector:
         """Clear prediction cache"""
         self._cache.clear()
 
+    # ============================================
+    # ONLINE DETECTION (dengan fallback ke local engine)
+    # ============================================
+
+    async def detect_genre_online(self, title: str, artist: str = None) -> Dict:
+        """
+        Deteksi genre via API online (MusicBrainz tags) dengan fallback
+        ke local engine bila tidak ada koneksi / hasil tidak ditemukan.
+        Sebelumnya method ini tidak ada -> endpoint detect-online selalu 500.
+        """
+        result = None
+        try:
+            import httpx
+            query = f'recording:"{title}"'
+            if artist:
+                query += f' AND artist:"{artist}"'
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    "https://musicbrainz.org/ws/2/recording/",
+                    params={"query": query, "fmt": "json", "limit": 3},
+                    headers={"User-Agent": "BPFKaraoke/3.1 (karaoke@bpffutures.com)"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    recordings = data.get("recordings", [])
+                    if recordings:
+                        tags = []
+                        for rec in recordings[:3]:
+                            tags.extend(t["name"] for t in rec.get("tags", []))
+                        genre = self._map_online_tags(tags)
+                        if genre:
+                            result = {
+                                "genre": genre,
+                                "confidence": 0.6,
+                                "source": "musicbrainz",
+                                "tags": tags[:10],
+                            }
+        except Exception:
+            result = None  # Tidak ada koneksi -> pakai local engine
+
+        if not result:
+            pred = self.predict_genre(artist or "", title)
+            result = {
+                "genre": None if pred["genre"] == "Unknown" else pred["genre"],
+                "confidence": pred["confidence"],
+                "source": "local",
+                "tags": [],
+            }
+        return result
+
+    def _map_online_tags(self, tags: list) -> Optional[str]:
+        """Petakan tag dari API online ke genre lokal"""
+        for tag in tags:
+            t = tag.lower().strip()
+            if any(k in t for k in ["dangdut", "koplo", "campursari"]):
+                return "Dangdut"
+            if t in ("k-pop", "kpop") or "korean pop" in t:
+                return "K-Pop"
+            if any(k in t for k in ["rock", "metal", "punk", "grunge"]):
+                return "Rock"
+            if any(k in t for k in ["jazz", "blues", "swing", "bossa nova"]):
+                return "Jazz"
+            if any(k in t for k in ["edm", "electronic", "dance", "house", "techno", "trance"]):
+                return "EDM"
+            if any(k in t for k in ["hip hop", "hiphop", "rap", "trap"]):
+                return "Hip Hop"
+            if any(k in t for k in ["mandarin", "c-pop", "chinese", "cpop"]):
+                return "Mandarin"
+            if any(k in t for k in ["religious", "gospel", "worship", "nasyid", "sholawat"]):
+                return "Religi"
+            if any(k in t for k in ["children", "kids", "nursery", "child"]):
+                return "Anak"
+            if any(k in t for k in ["ballad", "slow", "mellow"]):
+                return "Ballad"
+        return None
+
 
 # Singleton instance
 genre_detector = GenreDetector()

@@ -3,7 +3,6 @@ passlib[bcrypt]==1.7.4
 fastapi>=0.100.0
 uvicorn>=0.22.0
 pydantic>=2.0
-pydantic-settings>=2.0
 sqlalchemy[asyncio]>=2.0.0
 asyncpg>=0.28.0
 python-jose[cryptography]>=3.3.0
@@ -19,15 +18,22 @@ httpx>=0.24.0
 celery[redis]==5.4.0
 redis==5.0.8
 
-# MinIO Client
-minio==7.2.7
-
 # FFmpeg Python binding
 ffmpeg-python==0.2.0
 
 # Video processing
 opencv-python-headless==4.10.0.84
+
+# Fuzzy matching (smart search & genre detector)
 fuzzywuzzy==0.18.0
 python-Levenshtein==0.25.1
-fuzzywuzzy==0.18.0
-python-Levenshtein==0.25.1
+
+# Database migrations
+alembic>=1.13.0
+
+# Testing (realtime integration tests)
+pytest>=8.0
+websocket-client>=1.6.0
+
+# SMB1 karaoke bank sync (Windows XP source)
+pysmb>=1.2.9

@@ -5,10 +5,15 @@ services:
   karaoke_db:
     image: postgres:16-alpine
     container_name: karaoke_db
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     environment:
-      POSTGRES_USER: ${DB_USER:-karaoke_admin}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-K4r40k3S3cur3P4ss!2024}
-      POSTGRES_DB: ${DB_NAME:-karaoke_db}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     volumes:
       - ./database/data:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d
@@ -27,6 +32,11 @@ services:
   karaoke_redis:
     image: redis:7-alpine
     container_name: karaoke_redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - ./redis/data:/data
@@ -40,49 +50,6 @@ services:
       retries: 5
 
   # =============================================
-  # MINIO - Object Storage (S3 Compatible)
-  # =============================================
-  karaoke_minio:
-    image: minio/minio:latest
-    container_name: karaoke_minio
-    command: server /data --console-address ":${MINIO_CONSOLE_PORT:-9001}" --address ":${MINIO_API_PORT:-9000}"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-karaoke_admin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-MinI0K4r40k3S3cur3!2024}
-    volumes:
-      - ./minio/data:/data
-    restart: unless-stopped
-    networks:
-      - nextcloud_net
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # =============================================
-  # MINIO CLIENT - Auto-setup bucket
-  # =============================================
-  karaoke_minio_setup:
-    image: minio/mc:latest
-    container_name: karaoke_minio_setup
-    entrypoint: >
-      /bin/sh -c "
-      sleep 10;
-      mc alias set local http://karaoke_minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
-      mc mb --ignore-existing local/${MINIO_BUCKET:-karaoke-media};
-      mc anonymous set download local/${MINIO_BUCKET:-karaoke-media};
-      mc policy set download local/${MINIO_BUCKET:-karaoke-media};
-      echo 'MinIO bucket setup completed';
-      exit 0;
-      "
-    depends_on:
-      karaoke_minio:
-        condition: service_healthy
-    networks:
-      - nextcloud_net
-
-  # =============================================
   # BACKEND API - FastAPI + Socket.IO
   # =============================================
   karaoke_backend:
@@ -90,23 +57,28 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: karaoke_backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER:-karaoke_admin}:${DB_PASSWORD:-K4r40k3S3cur3P4ss!2024}@karaoke_db:5432/${DB_NAME:-karaoke_db}
-      JWT_SECRET: ${JWT_SECRET:-K4r40k3JWTS3cr3tK3yV3ryL0ngStr1ng2024!@#$}
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      JWT_SECRET: ${JWT_SECRET}
       ADMIN_USER: ${ADMIN_USER:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminK4r40k3!2024}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       MEDIA_PATH: /media/lagu
+      SYNC_STATE_PATH: /srv_media/sync_state.json
       CORS_ORIGINS: "*"
-      REDIS_URL: ${REDIS_URL:-redis://karaoke_redis:6379/0}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://karaoke_redis:6379/1}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://karaoke_redis:6379/2}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-karaoke_minio:9000}
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-karaoke_admin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-MinI0K4r40k3S3cur3!2024}
-      MINIO_BUCKET: ${MINIO_BUCKET:-karaoke-media}
-      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-https://nasbpfsby.duckdns.org:9000}
+      REDIS_URL: redis://karaoke_redis:6379/0
+      CELERY_BROKER_URL: redis://karaoke_redis:6379/1
+      CELERY_RESULT_BACKEND: redis://karaoke_redis:6379/2
+      # YouTube Data API v3 (gratis 10.000 unit/hari) untuk cari lagu yg tidak ada di DB
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
     volumes:
-      - ./media/lagu:/media/lagu:rw
+      - /srv/karaoke_media/lagu:/media/lagu:rw
+      - /srv/karaoke_media/transcoded:/media/transcoded:rw
+      - /srv/karaoke_media:/srv_media:ro
       - ./backend/uploads:/app/uploads
     depends_on:
       karaoke_db:
@@ -118,34 +90,71 @@ services:
       - nextcloud_net
 
   # =============================================
-  # CELERY WORKER - Background Tasks
+  # CELERY WORKER - AI Background Tasks
   # =============================================
   karaoke_celery:
     build:
       context: ./backend
       dockerfile: Dockerfile.celery
     container_name: karaoke_celery
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER:-karaoke_admin}:${DB_PASSWORD:-K4r40k3S3cur3P4ss!2024}@karaoke_db:5432/${DB_NAME:-karaoke_db}
-      REDIS_URL: ${REDIS_URL:-redis://karaoke_redis:6379/0}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://karaoke_redis:6379/1}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://karaoke_redis:6379/2}
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      REDIS_URL: redis://karaoke_redis:6379/0
+      CELERY_BROKER_URL: redis://karaoke_redis:6379/1
+      CELERY_RESULT_BACKEND: redis://karaoke_redis:6379/2
       MEDIA_PATH: /media/lagu
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-karaoke_minio:9000}
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-karaoke_admin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-MinI0K4r40k3S3cur3!2024}
-      MINIO_BUCKET: ${MINIO_BUCKET:-karaoke-media}
-      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-https://nasbpfsby.duckdns.org:9000}
+      CATALOG_PATH: /srv_media/catalog.json
+      SYNC_STATE_PATH: /srv_media/sync_state.json
+      # Hapus sumber (semua format master) setelah transcode sukses
+      DELETE_SOURCE_AFTER_TRANSCODE: ${DELETE_SOURCE_AFTER_TRANSCODE:-1}
+      DELETE_SOURCE_EXTS: ${DELETE_SOURCE_EXTS:-.mpg,.mpeg,.avi,.mkv,.wmv,.flv,.vob,.m2v,.mpv,.3gp,.dat}
+      # Webhook untuk laporan mingguan pipeline (Telegram/Discord/Slack)
+      SMB_WEBHOOK_URL: ${SMB_WEBHOOK_URL:-}
     volumes:
-      - ./media/lagu:/media/lagu:rw
-      - ./media/transcoded:/media/transcoded:rw
+      - /srv/karaoke_media/lagu:/media/lagu:rw
+      - /srv/karaoke_media/transcoded:/media/transcoded:rw
+      - /srv/karaoke_media:/srv_media:ro
     depends_on:
       karaoke_db:
         condition: service_healthy
       karaoke_redis:
         condition: service_healthy
-      karaoke_minio:
-        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - nextcloud_net
+
+  # =============================================
+  # KARAOKE SYNC - SMB1 Karaoke Bank (Windows XP)
+  # =============================================
+  karaoke_sync:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: karaoke_sync
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    command: python -m services.smb_sync
+    environment:
+      SMB_HOST: ${SMB_HOST:-192.168.1.108}
+      SMB_PORT: ${SMB_PORT:-445}
+      SMB_USER: ${SMB_USER:-}
+      SMB_PASSWORD: ${SMB_PASSWORD:-}
+      SMB_SHARES: ${SMB_SHARES:-karaoke bank 1,karaoke bank 2}
+      SMB_PARALLEL: ${SMB_PARALLEL:-4}
+      SMB_WEBHOOK_URL: ${SMB_WEBHOOK_URL:-}
+      MEDIA_PATH: /srv_media/lagu
+      SYNC_STATE_PATH: /srv_media/sync_state.json
+      TRANSCODED_PATH: /srv_media/transcoded
+    volumes:
+      - /srv/karaoke_media:/srv_media:rw
     restart: unless-stopped
     networks:
       - nextcloud_net
@@ -158,15 +167,24 @@ services:
       context: ./backend
       dockerfile: Dockerfile.celery
     container_name: karaoke_celery_beat
-    command: celery -A celery_app beat --loglevel=info
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    command: celery -A celery_app beat --loglevel=warning
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER:-karaoke_admin}:${DB_PASSWORD:-K4r40k3S3cur3P4ss!2024}@karaoke_db:5432/${DB_NAME:-karaoke_db}
-      REDIS_URL: ${REDIS_URL:-redis://karaoke_redis:6379/0}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://karaoke_redis:6379/1}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://karaoke_redis:6379/2}
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      REDIS_URL: redis://karaoke_redis:6379/0
+      CELERY_BROKER_URL: redis://karaoke_redis:6379/1
+      CELERY_RESULT_BACKEND: redis://karaoke_redis:6379/2
       MEDIA_PATH: /media/lagu
+      SYNC_STATE_PATH: /srv_media/sync_state.json
+      # Webhook untuk laporan mingguan pipeline (Telegram/Discord/Slack)
+      SMB_WEBHOOK_URL: ${SMB_WEBHOOK_URL:-}
     volumes:
-      - ./media/lagu:/media/lagu:rw
+      - /srv/karaoke_media/lagu:/media/lagu:rw
+      - /srv/karaoke_media:/srv_media:ro
     depends_on:
       karaoke_redis:
         condition: service_healthy
@@ -182,6 +200,11 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: karaoke_frontend
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     environment:
       VITE_API_URL: https://nasbpfsby.duckdns.org:8443
       VITE_WS_URL: wss://nasbpfsby.duckdns.org:8443

@@ -35,6 +35,9 @@
           <router-link to="/operator?screen=1" class="btn-hero-primary">
             🖥️ Mulai Operasi
           </router-link>
+          <router-link to="/rooms" class="btn-hero-rooms">
+            🏠 Pilih Room
+          </router-link>
           <router-link to="/remote" class="btn-hero-secondary">
             📱 Coba Remote
           </router-link>
@@ -184,6 +187,14 @@ const roles = [
   border: 2px solid #3b82f6; transition: all 0.3s;
 }
 .btn-hero-secondary:hover { background: #eff6ff; transform: translateY(-2px); }
+.btn-hero-rooms {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.875rem 2rem; background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  color: white; border-radius: 50px; text-decoration: none;
+  font-weight: 600; box-shadow: 0 4px 15px rgba(139,92,246,0.3);
+  transition: all 0.3s;
+}
+.btn-hero-rooms:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(139,92,246,0.4); }
 .hero-visual { flex: 1; display: flex; align-items: center; justify-content: center; }
 
 /* SOLUSI: CSS atur ukuran logo hero */
