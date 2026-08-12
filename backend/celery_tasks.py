@@ -62,6 +62,9 @@ def run_async(coro):
 # ---------------------------------------------------------------------------
 REDIS_URL = os.getenv('REDIS_URL', 'redis://karaoke_redis:6379/0')
 PENDING_KEY = 'transcode:pending'
+# Flag pause manual dari panel admin (v2.6): saat '1', scan & transcode baru
+# berhenti total tanpa menyentuh antrean/pending — kontrol penuh via UI.
+PAUSED_KEY = 'transcode:paused'
 _redis_client = None
 _redis_lock = threading.Lock()
 
@@ -97,6 +100,26 @@ def _pending_add(path: str) -> bool:
 def _pending_remove(path: str) -> None:
     try:
         _get_redis().srem(PENDING_KEY, path)
+    except Exception:
+        pass
+
+
+def _is_transcode_paused() -> bool:
+    """True bila transcode sedang di-pause manual dari panel admin."""
+    try:
+        return _get_redis().get(PAUSED_KEY) in (b'1', b'true', '1', 'true')
+    except Exception:
+        return False
+
+
+def _set_transcode_paused(paused: bool) -> None:
+    """Set/hapus flag pause (idempotent)."""
+    try:
+        r = _get_redis()
+        if paused:
+            r.set(PAUSED_KEY, '1')
+        else:
+            r.delete(PAUSED_KEY)
     except Exception:
         pass
 
@@ -273,6 +296,13 @@ def scan_for_new_media():
     """Scan folder media: daftarkan file playable & antrekan transcode master baru"""
     logger.info(f"Scanning {MEDIA_PATH} ...")
 
+    # v2.6: pause manual dari panel admin — scan tetap berjalan (ringan) tapi
+    # TIDAK mengantre transcode baru. Penanda pending dibiarkan utuh.
+    if _is_transcode_paused():
+        logger.info("Transcode sedang di-pause — scan dilewati (tanpa antre)")
+        return {"paused": True, "scanned": False, "queued": 0, "registered": 0,
+                "skipped_transcoded": 0, "timestamp": datetime.now().isoformat()}
+
     if not MEDIA_PATH.exists():
         return {"error": "Media path not found"}
 
@@ -375,6 +405,14 @@ def transcode_video(self, input_path: str):
     if src_size == 0:
         return {"error": "Source file empty", "status": "failed"}
 
+    # v2.6: pause manual — task yang sudah terlanjur diantre (mis. race saat
+    # pause) langsung berhenti TANPA menyentuh penanda pending (finally tidak
+    # dieksekusi), sehingga resume (yang membersihkan pending + scan ulang)
+    # mengantre-ulang dengan benar.
+    if _is_transcode_paused():
+        return {"status": "paused", "input": str(input_file),
+                "output": str(transcoded_path_for(input_file))}
+
     output_file = transcoded_path_for(input_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     part_file = output_file.with_name(output_file.name + ".part")
@@ -416,6 +454,13 @@ def transcode_video(self, input_path: str):
 
     self.update_state(state='PROGRESS', meta={'stage': 'transcoding', 'file': input_file.name})
 
+    # Cek pause KEDUA tepat sebelum spawn ffmpeg (menutup jendela TOCTOU:
+    # task lolos cek di atas lalu pause datang & pkill — tanpa cek ini task
+    # bisa spawn ffmpeg SETELAH pkill sehingga lolos dari pause).
+    if _is_transcode_paused():
+        return {"status": "paused", "input": str(input_file),
+                "output": str(output_file)}
+
     try:
         cmd = [
             'ffmpeg', '-y',
@@ -425,7 +470,7 @@ def transcode_video(self, input_path: str):
             '-avoid_negative_ts', 'make_zero',
             '-i', str(input_file),
             '-map', '0:v:0', '-map', '0:a?',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-c:v', 'libx264', '-preset', 'superfast', '-crf', '23',
             '-c:a', 'aac', '-b:a', '192k', '-ar', '44100', '-ac', '2',
             '-movflags', '+faststart',
             '-f', 'mp4',              # wajib: ekstensi .part tidak dikenali ffmpeg
@@ -480,6 +525,99 @@ def transcode_video(self, input_path: str):
         return {"error": str(e), "status": "failed"}
     finally:
         _pending_remove(input_path)
+
+# ============================================
+# KONTROL MANUAL PIPELINE (panel admin)
+# ============================================
+
+@app.task(name='celery_tasks.pause_transcoding')
+def pause_transcoding():
+    """Hentikan transcode SEKETIKA dari panel admin (v2.6):
+    1) set flag pause (scan & transcode baru berhenti),
+    2) matikan ffmpeg yang sedang berjalan (task pemilik akan self-clean .part),
+    3) kosongkan antrian transcoding (task yang belum dijalankan worker).
+
+    Master yang di-purge TIDAK hilang: file sumber tetap di disk dan akan
+    ditemukan kembali oleh scan saat resume (scan membaca dari filesystem,
+    penanda pending hanya mencegah antrean ganda).
+    """
+    _set_transcode_paused(True)
+    killed_before = 0
+    try:
+        out = subprocess.run(['pgrep', '-cf', '[f]fmpeg'], capture_output=True, text=True)
+        killed_before = int(out.stdout.strip() or 0)
+    except Exception:
+        pass
+    # Loop pkill: SIGTERM membuat ffmpeg shutdown (butuh ~1 dtk) — pgrep ulang
+    # terlalu cepat akan tetap melihat proses yatim sehingga metrik killed salah.
+    remaining = killed_before
+    for _ in range(8):
+        if remaining <= 0:
+            break
+        try:
+            subprocess.run(['pkill', '-f', '[f]fmpeg'], capture_output=True)
+        except Exception:
+            break
+        time.sleep(0.6)
+        try:
+            out = subprocess.run(['pgrep', '-cf', '[f]fmpeg'], capture_output=True, text=True)
+            remaining = int(out.stdout.strip() or 0)
+        except Exception:
+            remaining = 0
+            break
+    killed = max(killed_before - remaining, 0)
+    purged = 0
+    try:
+        import redis as _redis
+        r = _redis.from_url(os.getenv('CELERY_BROKER_URL', 'redis://karaoke_redis:6379/1'),
+                            socket_connect_timeout=3, socket_timeout=3)
+        purged = int(r.llen('transcoding'))
+        r.delete('transcoding')
+        r.close()
+    except Exception:
+        pass
+    logger.info(f"⏸ Transcode di-pause (ffmpeg_killed={killed}, purged={purged})")
+    return {"paused": True, "ffmpeg_killed": killed, "purged_tasks": purged,
+            "timestamp": datetime.now().isoformat()}
+
+
+@app.task(name='celery_tasks.resume_transcoding')
+def resume_transcoding():
+    """Lanjutkan transcode dari panel admin (v2.6): hapus flag pause + penanda
+    pending lama, purge sisa task 'transcoding' (task yang bocor dari scan yang
+    masih berjalan saat pause — mencegah duplikat antrean), lalu picu scan
+    SEKARANG (tanpa menunggu beat 10 menit) sehingga seluruh master yang belum
+    ter-transcode di-antre ulang otomatis dari state bersih."""
+    _set_transcode_paused(False)
+    cleared = 0
+    try:
+        r = _get_redis()
+        cleared = int(r.scard(PENDING_KEY))
+        r.delete(PENDING_KEY)
+    except Exception:
+        pass
+    purged = 0
+    try:
+        import redis as _redis
+        r = _redis.from_url(os.getenv('CELERY_BROKER_URL', 'redis://karaoke_redis:6379/1'),
+                            socket_connect_timeout=3, socket_timeout=3)
+        purged = int(r.llen('transcoding'))
+        r.delete('transcoding')
+        r.close()
+    except Exception:
+        pass
+    dispatched = False
+    try:
+        scan_for_new_media.delay()
+        dispatched = True
+    except Exception:
+        pass
+    logger.info(f"▶ Transcode di-resume (pending_cleared={cleared}, "
+                f"queue_purged={purged}, scan={dispatched})")
+    return {"paused": False, "pending_cleared": cleared,
+            "queue_purged": purged, "scan_dispatched": dispatched,
+            "timestamp": datetime.now().isoformat()}
+
 
 # ============================================
 # TASK 2: AI VOCAL REMOVER
@@ -742,7 +880,45 @@ def cleanup_transcodes():
 
 
 # ============================================
-# TASK 5: LAPORAN MINGGUAN PIPELINE (webhook)
+# TASK 5: DEDUPE LAGU DUPLIKAT (terjadwal mingguan)
+# ============================================
+
+@app.task(name='celery_tasks.dedupe_duplicates')
+def dedupe_duplicates():
+    """Hapus lagu duplikat otomatis (versi terbaru, pertahankan original).
+
+    Dijadwalkan mingguan via Celery Beat. Semua logika di services.song_dedupe
+    (sama dengan CLI & API admin). Aman:
+    - Hanya versi dengan created_at TERBARU di tiap grup yang dihapus.
+    - Backup JSON ditulis ke /app/uploads/ sebelum hapus.
+    - File tidak dihapus bila masih direferensikan lagu lain.
+    - Idempoten: setelah bersih, run berikutnya menghapus 0.
+    """
+    from services.song_dedupe import find_duplicate_groups, delete_selected
+
+    async def _run():
+        async with async_session() as session:
+            report = await find_duplicate_groups(session)
+            total = report['total_to_delete']
+            if total == 0:
+                return {"status": "clean", "deleted": 0,
+                        "message": "Tidak ada duplikat ditemukan"}
+            ids = [c['id'] for g in report['groups'] for c in g['candidates']]
+            res = await delete_selected(session, ids)
+            res["status"] = "deleted"
+            res["groups"] = report['total_groups']
+            res["detected"] = total
+            return res
+
+    result = run_async(_run())
+    logger.info(f"🗑️ Dedupe otomatis: {result.get('deleted_rows', 0)} lagu "
+                f"dihapus (grup={result.get('groups', 0)}, "
+                f"backup={result.get('backup_path')})")
+    return result
+
+
+# ============================================
+# TASK 6: LAPORAN MINGGUAN PIPELINE (webhook)
 # ============================================
 
 @app.task(name='celery_tasks.weekly_pipeline_report')

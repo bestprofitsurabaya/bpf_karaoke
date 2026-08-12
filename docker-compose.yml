@@ -132,6 +132,57 @@ services:
       - nextcloud_net
 
   # =============================================
+  # CELERY CONTROL WORKER - Queue 'control' SAJA
+  # =============================================
+  # Worker ringan (concurrency=1) khusus task KONTROL (pause/resume) di queue
+  # 'control'. Task ini instan (<1 dtk), TIDAK boleh mengantri di belakang
+  # ffmpeg maupun scan/cleanup yang panjang — tanpa worker ini, pause manual
+  # baru efektif puluhan detik kemudian. Scan/sweep/cleanup tetap di queue
+  # 'maintenance' yang dikonsumsi worker utama (kadang menunggu, tapi itu OK
+  # untuk task terjadwal non-urgent).
+  karaoke_celery_control:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.celery
+    container_name: karaoke_celery_control
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    command: celery -A celery_app worker --loglevel=info --concurrency=1 -Q control --hostname=control@%h
+    # Share PID namespace dgn worker utama agar pkill ffmpeg di task pause
+    # benar-benar membunuh ffmpeg yang berjalan di karaoke_celery (tanpa ini
+    # pkill hanya melihat proses container sendiri → ffmpeg_killed=0).
+    pid: "container:karaoke_celery"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@karaoke_db:5432/${DB_NAME}
+      TZ: Asia/Jakarta
+      REDIS_URL: redis://karaoke_redis:6379/0
+      CELERY_BROKER_URL: redis://karaoke_redis:6379/1
+      CELERY_RESULT_BACKEND: redis://karaoke_redis:6379/2
+      MEDIA_PATH: /media/lagu
+      CATALOG_PATH: /srv_media/catalog.json
+      SYNC_STATE_PATH: /srv_media/sync_state.json
+      DELETE_SOURCE_AFTER_TRANSCODE: ${DELETE_SOURCE_AFTER_TRANSCODE:-1}
+      DELETE_SOURCE_EXTS: ${DELETE_SOURCE_EXTS:-.mpg,.mpeg,.avi,.mkv,.wmv,.flv,.vob,.m2v,.mpv,.3gp,.dat}
+      SMB_WEBHOOK_URL: ${SMB_WEBHOOK_URL:-}
+    volumes:
+      - /srv/karaoke_media/lagu:/media/lagu:rw
+      - /srv/karaoke_media/transcoded:/media/transcoded:rw
+      - /srv/karaoke_media:/srv_media:ro
+    depends_on:
+      karaoke_celery:
+        condition: service_started
+      karaoke_db:
+        condition: service_healthy
+      karaoke_redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - nextcloud_net
+
+  # =============================================
   # KARAOKE SYNC - SMB1 Karaoke Bank (Windows XP)
   # =============================================
   karaoke_sync:
@@ -147,7 +198,8 @@ services:
     command: python -m services.smb_sync
     environment:
       TZ: Asia/Jakarta
-      SMB_HOST: ${SMB_HOST:-192.168.1.108}
+      SMB_HOST: ${SMB_HOST:-192.168.100.192}
+      SMB_AUTO_DETECT: ${SMB_AUTO_DETECT:-1}
       SMB_PORT: ${SMB_PORT:-445}
       SMB_USER: ${SMB_USER:-}
       SMB_PASSWORD: ${SMB_PASSWORD:-}

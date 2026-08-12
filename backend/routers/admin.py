@@ -57,6 +57,43 @@ def _count_media():
     return sources, mp4s, parts_active, parts_stale
 
 
+def _transcode_paused() -> bool:
+    """Flag pause transcode dari panel admin (Redis db 0). Fail-open: bila Redis
+    bermasalah, dianggap tidak pause (transcode jalan normal)."""
+    try:
+        import redis
+
+        r = redis.from_url(
+            os.getenv("REDIS_URL", "redis://karaoke_redis:6379/0"),
+            socket_connect_timeout=3, socket_timeout=3,
+        )
+        v = r.get("transcode:paused")
+        r.close()
+        return v in (b"1", "1", b"true", "true")
+    except Exception:
+        return False
+
+
+def _set_paused_flag(paused: bool) -> None:
+    """Set/hapus flag pause dari proses backend (uvicorn). Dipakai endpoint
+    pause/resume agar flag berubah SINKRON (fail-fast) — tidak bergantung pada
+    worker celery yang mungkin sedang mati/antri."""
+    try:
+        import redis
+
+        r = redis.from_url(
+            os.getenv("REDIS_URL", "redis://karaoke_redis:6379/0"),
+            socket_connect_timeout=3, socket_timeout=3,
+        )
+        if paused:
+            r.set("transcode:paused", "1")
+        else:
+            r.delete("transcode:paused")
+        r.close()
+    except Exception:
+        pass
+
+
 def _redis_queues():
     """Ambil antrian transcode (db 1) & penanda pending (db 0) dari Redis. Fail-open."""
     import redis
@@ -342,6 +379,7 @@ async def pipeline_status():
     data = {
         "sync": sync,
         "transcode": {
+            "paused": _transcode_paused(),
             "sources": sources,
             "mp4_ready": mp4s,
             "queue": queue_len,
@@ -357,13 +395,13 @@ async def pipeline_status():
     return data
 
 
-def _dispatch_admin_task(task_name: str, message: str):
+def _dispatch_admin_task(task_name: str, message: str, queue: str = 'maintenance'):
     """Kirim task celery dari proses backend (uvicorn). Fail-open dengan pesan
     jelas bila broker Redis tidak tersedia (502, bukan 500 polos)."""
     try:
         from celery_app import app as celery_app
 
-        task = celery_app.send_task(task_name, queue='maintenance')
+        task = celery_app.send_task(task_name, queue=queue)
         return {"task_id": task.id, "message": message}
     except Exception as e:
         raise HTTPException(502, f"Broker task tidak tersedia: {type(e).__name__}")
@@ -383,3 +421,74 @@ async def trigger_sweep(_admin=Depends(get_admin_user)):
     maintenance) — mempercepat pemulihan lagu yang terblokir task mati."""
     return _dispatch_admin_task(
         'celery_tasks.sweep_stale_parts', "Sweep .part basi dimulai")
+
+
+@router.post("/api/admin/pipeline/pause")
+async def pause_transcode(_admin=Depends(get_admin_user)):
+    """Hentikan transcode SEKETIKA dari panel admin.
+
+    Fail-fast: flag pause di-set SINKRON di endpoint dulu (scan & transcode baru
+    langsung berhenti walau worker control sedang mati), lalu task celery
+    (queue 'control') menangani pkill ffmpeg + purge antrian."""
+    _set_paused_flag(True)
+    return _dispatch_admin_task(
+        'celery_tasks.pause_transcoding', "Transcode dihentikan (pause)",
+        queue='control')
+
+
+@router.post("/api/admin/pipeline/resume")
+async def resume_transcode(_admin=Depends(get_admin_user)):
+    """Lanjutkan transcode dari panel admin (celery task, queue 'control').
+
+    PENTING: flag pause TIDAK dihapus sinkron di sini — resume harus lewat task
+    karena ia juga membersihkan penanda pending & purge sisa antrian sebelum
+    scan ulang. Jika flag dihapus tanpa cleanup (worker mati), transcode malah
+    menggantung: flag off tapi pending penuh → scan tidak mengantre ulang apa pun."""
+    return _dispatch_admin_task(
+        'celery_tasks.resume_transcoding', "Transcode dilanjutkan (resume)",
+        queue='control')
+
+
+# ============================================
+# DEDUPE LAGU DUPLIKAT (review manual di UI admin)
+# ============================================
+
+@router.get("/api/admin/dedupe/groups")
+async def dedupe_groups(db=Depends(get_db), _admin=Depends(get_admin_user)):
+    """Daftar grup lagu duplikat (versi yang dipertahankan + kandidat hapus).
+    Read-only — tidak menghapus apa pun."""
+    from services.song_dedupe import find_duplicate_groups
+
+    return await find_duplicate_groups(db)
+
+
+@router.post("/api/admin/dedupe/delete")
+async def dedupe_delete(song_ids: List[int], db=Depends(get_db),
+                        _admin=Depends(get_admin_user)):
+    """Hapus PERMANEN lagu duplikat terpilih (DB + file, backup otomatis).
+    Fail-closed: hanya id yang terdeteksi sebagai kandidat duplikat saat ini
+    yang dihapus; sisanya ditolak.
+    Body: [song_id, ...]
+    """
+    from services.song_dedupe import delete_selected
+
+    if not song_ids:
+        raise HTTPException(400, "No song IDs provided")
+    if len(song_ids) > 500:
+        raise HTTPException(400, "Maximum 500 songs per operation")
+
+    result = await delete_selected(db, song_ids)
+    if result["deleted_rows"] == 0 and result["rejected"]:
+        raise HTTPException(400, {
+            "message": "Lagu tidak lagi terdeteksi sebagai duplikat (sudah dihapus?)",
+            "rejected": result["rejected"],
+        })
+    return result
+
+
+@router.post("/api/admin/pipeline/dedupe")
+async def trigger_dedupe(_admin=Depends(get_admin_user)):
+    """Picu dedupe lagu duplikat otomatis sebagai task Celery (queue
+    maintenance) — backup otomatis ke /app/uploads/ sebelum hapus."""
+    return _dispatch_admin_task(
+        'celery_tasks.dedupe_duplicates', "Dedupe duplikat dijadwalkan")

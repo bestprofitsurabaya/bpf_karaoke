@@ -41,6 +41,12 @@ app.conf.task_routes = {
     'celery_tasks.sweep_stale_parts': {'queue': 'maintenance'},
     'celery_tasks.cleanup_transcodes': {'queue': 'maintenance'},
     'celery_tasks.weekly_pipeline_report': {'queue': 'maintenance'},
+    'celery_tasks.dedupe_duplicates': {'queue': 'maintenance'},
+    # Kontrol manual (pause/resume) di queue 'control' TERPISAH — task instan
+    # (<1 dtk) yang TIDAK boleh antri di belakang scan/cleanup panjang maupun
+    # ffmpeg. Dikonsumsi worker khusus karaoke_celery_control (concurrency=1).
+    'celery_tasks.pause_transcoding': {'queue': 'control'},
+    'celery_tasks.resume_transcoding': {'queue': 'control'},
 }
 
 # Periodic tasks
@@ -64,6 +70,13 @@ app.conf.beat_schedule = {
     'weekly-pipeline-report-monday-7am': {
         'task': 'celery_tasks.weekly_pipeline_report',
         'schedule': crontab(hour=7, minute=0, day_of_week=1),
+    },
+    # Dedupe lagu duplikat otomatis (tiap Senin 09:00 Asia/Jakarta, setelah
+    # laporan webhook) — hapus versi terbaru, pertahankan original, backup
+    # otomatis ke /app/uploads/. Idempoten: bersih -> 0 dihapus.
+    'dedupe-duplicates-weekly-monday-9am': {
+        'task': 'celery_tasks.dedupe_duplicates',
+        'schedule': crontab(hour=9, minute=0, day_of_week=1),
     },
 }
 

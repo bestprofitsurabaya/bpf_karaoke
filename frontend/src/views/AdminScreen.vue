@@ -12,6 +12,7 @@
         <button @click="activeTab = 'rooms'" :class="{ active: activeTab === 'rooms' }">🚪 Room</button>
         <button @click="activeTab = 'sesi'" :class="{ active: activeTab === 'sesi' }">⏱️ Sesi Room</button>
         <button @click="activeTab = 'scan'" :class="{ active: activeTab === 'scan' }">📂 Scan</button>
+        <button @click="activeTab = 'dedupe'" :class="{ active: activeTab === 'dedupe' }">🗑️ Duplikat</button>
       </nav>
       <router-link to="/" class="back-link">← Kembali</router-link>
     </aside>
@@ -70,10 +71,15 @@
         </div>
 
         <!-- PIPELINE TRANSCODE (setelah sync) -->
-        <div class="sync-card pipeline-card" :class="{ warn: pipelineWarn }">
+        <div class="sync-card pipeline-card" :class="{ warn: pipelineWarn, paused: isPaused }">
           <div class="sync-head">
-            <h3>🛠 Pipeline Transcode <small>(MPEG → MP4, hapus sumber)</small></h3>
+            <h3>🛠 Pipeline Transcode <small>(MPEG → MP4, hapus sumber)</small>
+              <span v-if="isPaused" class="pipe-badge" title="Transcode dihentikan manual — klik ▶ Lanjut untuk melanjutkan">⏸ DI-PAUSE</span>
+              <span v-else-if="store.pipeline?.transcode" class="pipe-badge live" title="Transcode aktif (scan tiap 10 menit)">▶ AKTIF</span>
+            </h3>
             <div class="pipeline-actions">
+              <button v-if="!isPaused" class="btn-pipe pause" @click="triggerPause" :disabled="pipeBusy" :title="'Hentikan transcode sekarang: matikan ffmpeg + kosongkan antrian (master tetap aman)'">⏸ Pause</button>
+              <button v-else class="btn-pipe resume" @click="triggerResume" :disabled="pipeBusy" :title="'Lanjutkan transcode: antre ulang semua master yang tersisa + scan sekarang'">▶ Lanjut</button>
               <button class="btn-pipe" @click="triggerScan" :disabled="pipeBusy" :title="'Picu scan media + antre transcode'">🔍 Scan</button>
               <button class="btn-pipe" @click="triggerSweep" :disabled="pipeBusy" :title="'Bersihkan .part basi dari task yang mati'">🧹 Sweep</button>
               <button class="btn-pipe refresh" @click="store.fetchPipeline()" :title="'Segarkan data pipeline'">🔄</button>
@@ -340,6 +346,75 @@
           <div v-if="scanResult" class="scan-result">✅ {{ scanResult.new_songs }} lagu baru ditambahkan!</div>
         </div>
       </div>
+
+      <!-- DEDUPE LAGU DUPLIKAT -->
+      <div v-if="activeTab === 'dedupe'">
+        <div class="section-header">
+          <h2>🗑️ Lagu Duplikat</h2>
+          <div class="header-actions">
+            <span class="song-count" v-if="dedupeReport">
+              {{ dedupeReport.total_groups }} grup · {{ dedupeReport.total_to_delete }} kandidat hapus
+            </span>
+            <button class="btn-action ai" @click="fetchDedupe">🔄 Analisis</button>
+          </div>
+        </div>
+
+        <!-- Info & aksi massal -->
+        <div class="dedupe-info">
+          <p>🧠 <b>Aturan:</b> versi yang <b>lebih lama</b> (created_at paling awal) dipertahankan sebagai original.
+            Kandidat hapus adalah versi <b>terbaru</b> — biasanya duplikat dari bank lain. Centang lalu hapus; file MP4 ikut dihapus (backup otomatis ke server).</p>
+          <div class="dedupe-actions">
+            <button class="btn-pipe" @click="selectAllDedupe" :disabled="!dedupeReport">☑️ Pilih Semua</button>
+            <button class="btn-pipe" @click="clearDedupe">Batal</button>
+            <button class="btn-danger" @click="deleteSelectedDedupe" :disabled="dedupeSelected.size === 0 || dedupeBusy">
+              {{ dedupeBusy ? '⏳ Menghapus...' : `🗑️ Hapus ${dedupeSelected.size} Terpilih` }}
+            </button>
+          </div>
+          <div v-if="dedupeMsg" class="pipe-msg" :class="{ err: dedupeMsgErr }">{{ dedupeMsg }}</div>
+        </div>
+
+        <!-- Daftar grup duplikat -->
+        <div v-if="dedupeLoading" class="sync-empty">Menganalisis duplikat...</div>
+        <div v-else-if="!dedupeReport || dedupeReport.groups.length === 0" class="sync-card">
+          <p class="sync-empty">🎉 Tidak ada lagu duplikat ditemukan. (Lagu tanpa metadata juga dicek via nama file.)</p>
+        </div>
+        <div v-else class="dedupe-groups">
+          <div v-for="(g, gi) in dedupeReport.groups" :key="gi" class="dedupe-group">
+            <div class="dedupe-group-head">
+              <span class="dedupe-kind" :class="g.kind === 'path' ? 'path' : 'meta'">
+                {{ g.kind === 'path' ? 'tanpa metadata (nama file)' : 'metadata sama' }}
+              </span>
+              <span class="dedupe-artist">{{ g.keep.artist || g.candidates[0]?.artist || '(tanpa metadata)' }}</span>
+              <span class="dedupe-title">{{ g.keep.title || g.candidates[0]?.title || '(tanpa metadata)' }}</span>
+            </div>
+            <table class="data-table dedupe-table">
+              <thead>
+                <tr><th class="th-check"></th><th>ID</th><th>Status</th><th>Created</th><th>Ukuran</th><th>File</th></tr>
+              </thead>
+              <tbody>
+                <tr class="dedupe-keep">
+                  <td></td>
+                  <td>{{ g.keep.id }}</td>
+                  <td><span class="dedupe-badge keep">✅ KEEP (original)</span></td>
+                  <td>{{ shortDate(g.keep.created_at) }}</td>
+                  <td>{{ fmtBytes(g.keep.size_bytes) }}</td>
+                  <td class="td-path">{{ g.keep.file_path }}</td>
+                </tr>
+                <tr v-for="c in g.candidates" :key="c.id" class="dedupe-del" :class="{ sel: dedupeSelected.has(c.id) }">
+                  <td class="td-check">
+                    <input type="checkbox" :checked="dedupeSelected.has(c.id)" @change="toggleDedupe(c.id)" />
+                  </td>
+                  <td>{{ c.id }}</td>
+                  <td><span class="dedupe-badge del">🗑️ Hapus</span></td>
+                  <td>{{ shortDate(c.created_at) }}</td>
+                  <td>{{ fmtBytes(c.size_bytes) }}</td>
+                  <td class="td-path">{{ c.file_path }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </main>
 
     <!-- Toast -->
@@ -362,6 +437,81 @@ const scanning = ref(false)
 const scanResult = ref(null)
 const aiDetecting = ref(false)
 const aiResult = ref(null)
+
+// ========== DEDUPE LAGU DUPLIKAT ==========
+const dedupeReport = ref(null)
+const dedupeLoading = ref(false)
+const dedupeBusy = ref(false)
+const dedupeSelected = ref(new Set())
+const dedupeMsg = ref('')
+const dedupeMsgErr = ref(false)
+
+function fmtBytes(b) {
+  if (!b) return '–'
+  if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(1) + ' GB'
+  if (b >= 1024 ** 2) return (b / 1024 ** 2).toFixed(0) + ' MB'
+  return (b / 1024).toFixed(0) + ' KB'
+}
+function shortDate(iso) {
+  if (!iso) return '–'
+  const s = String(iso)
+  const d = new Date(/Z$|[+-]\d{2}:\d{2}$/.test(s) ? s : s + 'Z')
+  if (isNaN(d.getTime())) return iso.slice(0, 10)
+  return d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' })
+}
+
+async function fetchDedupe({ silent = false } = {}) {
+  dedupeLoading.value = true
+  if (!silent) dedupeMsg.value = ''
+  try {
+    const res = await axios.get('/api/admin/dedupe/groups')
+    dedupeReport.value = res.data
+    // Hapus id yang sudah tidak ada dari seleksi
+    const valid = new Set((res.data.groups || []).flatMap(g => g.candidates.map(c => c.id)))
+    dedupeSelected.value = new Set([...dedupeSelected.value].filter(id => valid.has(id)))
+    if (!silent) showToast(`🗑️ ${res.data.total_groups} grup duplikat ditemukan`)
+  } catch (e) {
+    dedupeMsg.value = '❌ ' + (e.response?.data?.detail || 'Gagal analisis duplikat')
+    dedupeMsgErr.value = true
+  }
+  dedupeLoading.value = false
+}
+
+function toggleDedupe(id) {
+  const s = new Set(dedupeSelected.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  dedupeSelected.value = s
+}
+
+function selectAllDedupe() {
+  dedupeSelected.value = new Set(
+    (dedupeReport.value?.groups || []).flatMap(g => g.candidates.map(c => c.id))
+  )
+}
+
+function clearDedupe() { dedupeSelected.value = new Set() }
+
+async function deleteSelectedDedupe() {
+  if (dedupeSelected.value.size === 0) return
+  const ids = [...dedupeSelected.value]
+  if (!confirm(`Hapus PERMANEN ${ids.length} lagu duplikat (DB + file MP4)?\n\nVersi original (lebih lama) tetap dipertahankan.`)) return
+  dedupeBusy.value = true
+  dedupeMsg.value = ''
+  try {
+    const res = await axios.post('/api/admin/dedupe/delete', ids)
+    dedupeMsg.value = `✅ ${res.data.deleted_rows} lagu dihapus (file: ${res.data.deleted_files}) · backup: ${res.data.backup_path}`
+    dedupeMsgErr.value = false
+    dedupeSelected.value = new Set()
+    fetchDedupe({ silent: true })   // refresh tanpa menimpa pesan sukses
+    store.fetchStats()
+    if (activeTab.value === 'songs') fetchSongs()
+  } catch (e) {
+    dedupeMsg.value = '❌ ' + (e.response?.data?.detail?.message || e.response?.data?.detail || 'Gagal hapus duplikat')
+    dedupeMsgErr.value = true
+  }
+  dedupeBusy.value = false
+}
 
 // Sinkronisasi Bank Karaoke
 const syncState = ref(null)
@@ -406,6 +556,46 @@ async function triggerSweep() {
     setTimeout(() => { if (!pipeMsgErr.value) pipeBusyMsg.value = '' }, 5000)
   } catch (e) {
     pipeBusyMsg.value = '❌ ' + (e.response?.data?.detail || 'Gagal menjalankan sweep'); pipeMsgErr.value = true
+  }
+  pipeBusy.value = false
+}
+
+// Kontrol pause/resume transcode manual dari panel admin (v2.6)
+const isPaused = computed(() => !!(store.pipeline?.transcode?.paused))
+
+// API pipeline di-cache server 15 dtk — update state lokal SEKETIKA agar badge
+// & tombol tidak terlihat basi setelah aksi, lalu refresh penuh di belakang.
+function optimisticPaused(v) {
+  if (store.pipeline?.value?.transcode) {
+    store.pipeline.value.transcode.paused = v
+    if (v) store.pipeline.value.transcode.queue = 0
+  }
+}
+
+async function triggerPause() {
+  pipeBusy.value = true; pipeBusyMsg.value = '⏸ Menghentikan transcode (matikan ffmpeg + kosongkan antrian)...'; pipeMsgErr.value = false
+  try {
+    const res = await axios.post('/api/admin/pipeline/pause')
+    pipeBusyMsg.value = `✅ Transcode dihentikan (task ${String(res.data.task_id).slice(0, 8)}); master tetap aman`
+    setTimeout(() => { if (!pipeMsgErr.value) pipeBusyMsg.value = '' }, 5000)
+    optimisticPaused(true)
+    store.fetchPipeline()
+  } catch (e) {
+    pipeBusyMsg.value = '❌ ' + (e.response?.data?.detail || 'Gagal menghentikan transcode'); pipeMsgErr.value = true
+  }
+  pipeBusy.value = false
+}
+
+async function triggerResume() {
+  pipeBusy.value = true; pipeBusyMsg.value = '▶ Melanjutkan transcode & mengantre ulang master...'; pipeMsgErr.value = false
+  try {
+    const res = await axios.post('/api/admin/pipeline/resume')
+    pipeBusyMsg.value = `✅ Transcode dilanjutkan — scan ulang dijalankan (task ${String(res.data.task_id).slice(0, 8)})`
+    setTimeout(() => { if (!pipeMsgErr.value) pipeBusyMsg.value = '' }, 5000)
+    optimisticPaused(false)
+    store.fetchPipeline()
+  } catch (e) {
+    pipeBusyMsg.value = '❌ ' + (e.response?.data?.detail || 'Gagal melanjutkan transcode'); pipeMsgErr.value = true
   }
   pipeBusy.value = false
 }
@@ -729,6 +919,7 @@ watch(activeTab, (tab) => {
   if (tab === 'rooms') fetchRooms()
   if (tab === 'songs') fetchSongs()
   if (tab === 'sesi') { refreshSessionStates(); sessionHistory.value = []; historyRoom.value = '' }
+  if (tab === 'dedupe') fetchDedupe()
 })
 
 watch(() => store.isConnected, (val) => { realtimeLive.value = val })
@@ -881,11 +1072,17 @@ tr.selected { background: #eff6ff; }
 
 /* Pipeline Transcode */
 .pipeline-card.warn { border-color: #fde68a; background: #fffbeb; }
-.pipeline-actions { display: flex; gap: 0.4rem; }
+.pipeline-card.paused { border-color: #fca5a5; background: #fff5f5; }
+.pipeline-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .btn-pipe { padding: 0.35rem 0.8rem; border: 1px solid #e2e8f0; border-radius: 8px; background: white; cursor: pointer; font-size: 0.75rem; font-weight: 600; color: #475569; transition: all .15s; }
 .btn-pipe:hover:not(:disabled) { border-color: #ef4444; color: #ef4444; background: #fef2f2; }
 .btn-pipe:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-pipe.refresh:hover { border-color: #3b82f6; color: #3b82f6; background: #eff6ff; }
+.btn-pipe.pause:hover { border-color: #f59e0b; color: #b45309; background: #fffbeb; }
+.btn-pipe.resume { border-color: #10b981; color: #059669; background: #f0fdf4; }
+.btn-pipe.resume:hover:not(:disabled) { border-color: #059669; color: #047857; background: #d1fae5; }
+.pipe-badge { display: inline-block; margin-left: 0.5rem; padding: 0.15rem 0.55rem; border-radius: 1rem; font-size: 0.65rem; font-weight: 700; vertical-align: middle; background: #fee2e2; color: #dc2626; }
+.pipe-badge.live { background: #f0fdf4; color: #16a34a; }
 .pipe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 0.6rem; margin-top: 0.25rem; }
 .pipe-cell { text-align: center; padding: 0.6rem 0.4rem; background: #f8fafc; border: 1px solid #f1f5f9; border-radius: 10px; }
 .pipe-cell.bad { border-color: #fca5a5; background: #fef2f2; }
@@ -895,6 +1092,29 @@ tr.selected { background: #eff6ff; }
 .pc-lbl { font-size: 0.62rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.4px; margin-top: 0.1rem; }
 .pipe-msg { margin-top: 0.6rem; padding: 0.4rem 0.7rem; background: #f0fdf4; color: #16a34a; border-radius: 8px; font-size: 0.78rem; font-weight: 500; }
 .pipe-msg.err { background: #fef2f2; color: #dc2626; }
+
+/* Dedupe Lagu Duplikat */
+.dedupe-info { background: white; border: 1px solid #f1f5f9; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+.dedupe-info p { font-size: 0.82rem; color: #475569; margin-bottom: 0.75rem; }
+.dedupe-actions { display: flex; gap: 0.5rem; align-items: center; }
+.btn-danger { padding: 0.45rem 1rem; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; border: none; border-radius: 8px; font-weight: 600; font-size: 0.8rem; cursor: pointer; }
+.btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+.dedupe-groups { display: flex; flex-direction: column; gap: 1rem; }
+.dedupe-group { background: white; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.dedupe-group-head { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; flex-wrap: wrap; }
+.dedupe-kind { font-size: 0.62rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 2rem; }
+.dedupe-kind.meta { background: #eff6ff; color: #2563eb; }
+.dedupe-kind.path { background: #fef3c7; color: #92400e; }
+.dedupe-artist { font-weight: 700; font-size: 0.82rem; }
+.dedupe-title { font-size: 0.8rem; color: #64748b; }
+.dedupe-table { margin: 0; }
+.dedupe-keep td { background: #f0fdf4; }
+.dedupe-del td { background: #fffbfb; }
+.dedupe-del.sel td { background: #fef2f2; }
+.dedupe-badge { font-size: 0.66rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 4px; white-space: nowrap; }
+.dedupe-badge.keep { background: #dcfce7; color: #15803d; }
+.dedupe-badge.del { background: #fee2e2; color: #b91c1c; }
+.td-path { font-size: 0.7rem; color: #94a3b8; max-width: 380px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Scan */
 .scan-card { background: white; border-radius: 16px; padding: 2rem; text-align: center; }

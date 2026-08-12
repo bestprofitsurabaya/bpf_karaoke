@@ -96,6 +96,7 @@
 | **🏠 Room Management** | CRUD rooms + **Sesi Room** (mulai/perpanjang/akhiri) |
 | **📂 Media Scanner** | Auto-scan + AI genre detection |
 | **🔍 Pipeline Scan/Sweep** | Trigger scan media & bersihkan `.part` basi (admin) |
+| **⏸ Pipeline Pause/Resume** | Hentikan/lanjutkan transcode SEKETIKA dari panel (matikan ffmpeg + kosongkan antrian; master tetap aman, resume mengantre ulang otomatis) |
 | **🤖 Auto Genre** | AI predict genre untuk semua lagu |
 
 ### 🤖 AI/ML Features
