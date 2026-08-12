@@ -25,6 +25,7 @@ from security import hash_password
 from sio import sio, active, start_stuck_watchdog
 
 from routers.auth import router as auth_router
+from routers.rooms import start_session_watchdog
 from routers.ai import router as ai_router
 from routers.songs import router as songs_router
 from routers.media import router as media_router
@@ -123,5 +124,10 @@ async def startup():
     # Watchdog anti-nyangkut: item 'playing' tanpa progress (player mati /
     # event hilang) otomatis di-skip agar antrian tidak menggantung selamanya.
     await start_stuck_watchdog()
+
+    # Watchdog sesi room: tutup sesi yang sudah lewat end_time secara berkala
+    # (tidak bergantung request HTTP klien — jam perangkat TV/operator bisa
+    # meleset dari jam server sehingga countdown klien tidak memicu penutupan).
+    await start_session_watchdog()
 
     print("  BPF KARAOKE BACKEND READY!")

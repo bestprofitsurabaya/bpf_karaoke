@@ -2,6 +2,7 @@
 Rooms Routes - List, CRUD, Queue Management & Room Sessions (Durasi Pemakaian)
 PT BESTPROFIT FUTURES SURABAYA
 """
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -9,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy import select, func, update
 from sqlalchemy.exc import IntegrityError
 
-from database import get_db
+from database import get_db, async_session
 from models import QueueItem, Room, RoomSession
 from schemas import RoomCreate, RoomResponse, SessionStart, SessionExtend
 from routers.auth import get_admin_user
@@ -65,7 +66,8 @@ def _serialize_session(s: Optional[RoomSession]) -> Optional[dict]:
 
 async def _close_expired_sessions(db) -> None:
     """Auto-complete sesi yang sudah melewati end_time (status: completed).
-    Set flag 'berhenti setelah lagu selesai' agar lagu yang sedang diputar
+    Beri tahu semua klien room via event 'room_session' (status completed) dan
+    set flag 'berhenti setelah lagu selesai' agar lagu yang sedang diputar
     diselesaikan dulu lalu auto-advance berhenti (bukan di-tengah lagu)."""
     now = datetime.utcnow()
     r = await db.execute(
@@ -76,19 +78,34 @@ async def _close_expired_sessions(db) -> None:
         )
     )
     expired = r.scalars().all()
-    if expired:
-        room_ids = list({s.room_id for s in expired})
-        r_names = await db.execute(select(Room).where(Room.id.in_(room_ids)))
-        name_by_id = {rm.id: rm.name for rm in r_names.scalars().all()}
-        for s in expired:
-            s.status = "completed"
-            s.ended_at = s.end_time
-            room_name = name_by_id.get(s.room_id)
-            if room_name:
-                # Selesai dulu lagu yang diputar, lalu berhenti (jika tidak ada
-                # lagu diputar, langsung berhenti sekarang)
-                await request_stop_after_song(room_name)
-        await db.commit()
+    if not expired:
+        return
+    room_ids = list({s.room_id for s in expired})
+    r_names = await db.execute(select(Room).where(Room.id.in_(room_ids)))
+    name_by_id = {rm.id: rm.name for rm in r_names.scalars().all()}
+    closed = []
+    for s in expired:
+        s.status = "completed"
+        s.ended_at = s.end_time
+        room_name = name_by_id.get(s.room_id)
+        if room_name:
+            closed.append((room_name, s))
+    await db.commit()
+    # Emit di luar transaksi; jangan sampai error socket membuat endpoint
+    # HTTP yang memanggil ini 500 padahal DB sudah ter-commit.
+    for room_name, s in closed:
+        try:
+            # Beri tahu semua klien room (operator/player/admin) bahwa sesi
+            # selesai agar timer countdown langsung hilang (tanpa menunggu
+            # refetch klien).
+            payload = _serialize_session(s)
+            await sio.emit("room_session", payload, room=room_name)
+            # Selesai dulu lagu yang diputar, lalu berhenti (jika tidak ada
+            # lagu diputar, langsung berhenti sekarang — emit session_ended)
+            await request_stop_after_song(room_name)
+        except Exception:
+            # Kegagalan notifikasi tidak boleh menggagalkan penutupan sesi.
+            pass
 
 
 async def _get_room_or_404(room_name: str, db) -> Room:
@@ -375,3 +392,31 @@ async def room_session_history(
         .limit(limit)
     )
     return [_serialize_session(s) for s in r.scalars().all()]
+
+
+# ============================================
+# WATCHDOG SESI ROOM (penutupan expired otomatis)
+# ============================================
+# Penutupan sesi TIDAK boleh bergantung pada request HTTP klien (watch
+# countdown di TV/operator bersifat one-shot dan jam perangkat bisa tidak
+# sinkron dengan server — selisih detik saja sudah cukup membuat sesi tidak
+# pernah ditutup). Loop ini menutup sesi yang sudah lewat end_time secara
+# berkala dan mengirim event realtime, sehingga perilaku saat waktu habis
+# selalu terjadi walau tidak ada klien yang mempolling.
+SESSION_CLOSE_INTERVAL_SEC = 15
+
+
+async def _session_watchdog_loop() -> None:
+    while True:
+        try:
+            await asyncio.sleep(SESSION_CLOSE_INTERVAL_SEC)
+            async with async_session() as db:
+                await _close_expired_sessions(db)
+        except Exception:
+            # Jangan pernah mematikan loop (koneksi DB putus dll.)
+            pass
+
+
+async def start_session_watchdog() -> None:
+    """Panggil dari startup backend (main.py): mulai watchdog penutup sesi."""
+    asyncio.create_task(_session_watchdog_loop())

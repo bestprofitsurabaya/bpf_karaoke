@@ -14,22 +14,27 @@ server secara INCREMENTAL & RESUMABLE dengan beberapa koneksi SMB paralel:
 - Memonitor ruang disk /srv; memberi warning bila menipis.
 
 Config (env):
-  SMB_HOST        default 192.168.1.108
-  SMB_PORT        default 445
-  SMB_USER        default ""  (guest)
-  SMB_PASSWORD    default ""
-  SMB_SHARES      default "karaoke bank 1,karaoke bank 2"
-  SMB_PARALLEL    default 4  (jumlah koneksi paralel; batas XP = 10 sesi)
-  SMB_WEBHOOK_URL default "" (opsional; dikirimi POST JSON saat done/error)
-  MEDIA_PATH      default /media/lagu
-  SYNC_STATE_PATH default /srv_media/sync_state.json
+  SMB_HOST          default 192.168.100.192 (IP terakhir dikenal)
+  SMB_AUTO_DETECT   default 1 (aktif) — bila SMB_HOST mati, cari otomatis via
+                    NetBIOS: broadcast dulu, lalu scan subnet /24 + reverse
+                    query nama SMB_REMOTE_NAME. Berguna saat IP XP berubah.
+  SMB_PORT          default 445
+  SMB_USER          default ""  (guest)
+  SMB_PASSWORD      default ""
+  SMB_SHARES        default "karaoke bank 1,karaoke bank 2"
+  SMB_PARALLEL      default 4  (jumlah koneksi paralel; batas XP = 10 sesi)
+  SMB_WEBHOOK_URL   default "" (opsional; dikirimi POST JSON saat done/error)
+  MEDIA_PATH        default /media/lagu
+  SYNC_STATE_PATH   default /srv_media/sync_state.json
 """
+import concurrent.futures
 import errno
 import json
 import os
 import queue
 import re
 import shutil
+import socket
 import threading
 import time
 import urllib.request
@@ -41,7 +46,12 @@ from smb.SMBConnection import SMBConnection
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SMB_HOST = os.getenv("SMB_HOST", "192.168.1.108")
+# SMB_HOST = IP terakhir yang dikenal (dipakai dulu; auto-detect hanya
+# dipicu bila koneksi ke IP ini GAGAL — maka XP kemungkinan pindah IP).
+SMB_HOST_ENV = os.getenv("SMB_HOST", "").strip()
+SMB_AUTO_DETECT = os.getenv("SMB_AUTO_DETECT", "1").lower() \
+    in ("1", "true", "yes", "on")
+DEFAULT_SMB_HOST = os.getenv("SMB_DEFAULT_HOST", "192.168.100.192")
 SMB_PORT = int(os.getenv("SMB_PORT", "445"))
 SMB_USER = os.getenv("SMB_USER", "")
 SMB_PASSWORD = os.getenv("SMB_PASSWORD", "")
@@ -255,14 +265,177 @@ def notify_if_needed(state: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auto-detect IP Windows XP (NetBIOS)
+# ---------------------------------------------------------------------------
+# IP XP bisa berubah-ubah (DHCP). Strategi: pakai SMB_HOST yang dikenal dulu;
+# bila gagal, cari XP via NetBIOS: (1) broadcast query nama, lalu (2) scan
+# subnet /24 — host dengan port 445/139 terbuka di-reverse-query namanya dan
+# dicocokkan dengan SMB_REMOTE_NAME. Hasil terakhir di-cache (_resolved_ip).
+_resolved_ip = {"ip": None, "at": 0.0}
+_last_scan = 0.0
+_detect_lock = threading.Lock()
+DETECT_CACHE_SEC = 3600       # hasil deteksi berlaku 1 jam (hindari scan ulang)
+DETECT_FAIL_COOLDOWN = 600    # setelah scan gagal, tunggu 10 mnt sebelum scan lagi
+DETECT_BROADCAST_TIMEOUT = 3  # detik
+DETECT_SCAN_PORT_TIMEOUT = 0.6
+DETECT_REVERSE_TIMEOUT = 1.5
+DETECT_MAX_WORKERS = 64       # paralel scan port
+
+
+def _netbios_names_for(ip: str) -> list:
+    """Reverse NetBIOS name query: nama mesin di IP tsb ([] bila bukan SMB host)."""
+    try:
+        from nmb.NetBIOS import NetBIOS
+        n = NetBIOS()
+        try:
+            names = n.queryIPForName(ip, timeout=DETECT_REVERSE_TIMEOUT) or []
+            return [str(x) for x in names]
+        finally:
+            n.close()
+    except Exception:
+        return []
+
+
+def _host_has_smb(ip: str) -> bool:
+    """True bila port 445/139 terbuka (kemungkinan Windows/SMB)."""
+    for port in (445, 139):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(DETECT_SCAN_PORT_TIMEOUT)
+            try:
+                if s.connect_ex((ip, port)) == 0:
+                    return True
+            finally:
+                s.close()
+        except Exception:
+            continue
+    return False
+
+
+def _scan_subnet_for_karaoke(base_ip: str) -> list:
+    """Scan subnet /24 dari base_ip: cari host yang nama NetBIOS-nya cocok.
+    Kembalikan daftar IP yang cocok (urut)."""
+    try:
+        subnet = ".".join(base_ip.split(".")[:3])
+    except Exception:
+        return []
+    found = []
+
+    def _probe(i: int):
+        ip = f"{subnet}.{i}"
+        if not _host_has_smb(ip):
+            return None
+        names = _netbios_names_for(ip)
+        for nm in names:
+            if nm.strip().upper() == SMB_REMOTE_NAME.strip().upper():
+                return ip
+        return None
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=DETECT_MAX_WORKERS) as ex:
+            for r in ex.map(_probe, range(1, 255)):
+                if r:
+                    found.append(r)
+    except Exception:
+        pass
+    return found
+
+
+def auto_detect_host() -> str:
+    """Cari IP XP secara otomatis. Kembalikan IP atau "" bila tidak ketemu.
+    Urutan: (1) broadcast NetBIOS, (2) scan subnet + reverse query."""
+    try:
+        from nmb.NetBIOS import NetBIOS
+        n = NetBIOS()
+        try:
+            hits = n.queryName(SMB_REMOTE_NAME, timeout=DETECT_BROADCAST_TIMEOUT) or []
+        finally:
+            n.close()
+        if hits:
+            return str(hits[0])
+    except Exception:
+        pass
+    # Broadcast sering tidak tembus bridge Docker -> fallback scan subnet
+    base = SMB_HOST_ENV or DEFAULT_SMB_HOST
+    if base:
+        hits = _scan_subnet_for_karaoke(base)
+        if hits:
+            return hits[0]
+    return ""
+
+
+def get_smb_host() -> str:
+    """IP target saat ini: hasil deteksi terakhir (cache), atau SMB_HOST env."""
+    with _detect_lock:
+        if _resolved_ip["ip"] and (time.time() - _resolved_ip["at"]) < DETECT_CACHE_SEC:
+            return _resolved_ip["ip"]
+        if SMB_HOST_ENV:
+            return SMB_HOST_ENV
+        return DEFAULT_SMB_HOST
+
+
+def _should_rescan() -> bool:
+    """True bila cooldown scan (DETECT_FAIL_COOLDOWN) sudah lewat."""
+    with _detect_lock:
+        return time.time() - _last_scan >= DETECT_FAIL_COOLDOWN
+
+
+# ---------------------------------------------------------------------------
 # Koneksi SMB1
 # ---------------------------------------------------------------------------
 def connect(timeout: int = 20):
+    """Koneksi SMB ke XP. Bila IP yang dikenal gagal (XP pindah IP), lakukan
+    auto-detect sekali dan coba ulang ke IP hasil deteksi."""
+    target = get_smb_host()
     conn = SMBConnection(SMB_USER, SMB_PASSWORD, SMB_MY_NAME,
                          SMB_REMOTE_NAME, use_ntlm_v2=True, is_direct_tcp=True)
-    if not conn.connect(SMB_HOST, SMB_PORT, timeout=timeout):
-        raise ConnectionError(f"tidak dapat konek ke {SMB_HOST}:{SMB_PORT}")
-    return conn
+    try:
+        if conn.connect(target, SMB_PORT, timeout=timeout):
+            return conn
+    except Exception:
+        pass
+
+    # Gagal ke IP dikenal -> coba auto-detect (XP mungkin pindah IP)
+    try:
+        conn.close()
+    except Exception:
+        pass
+    if not SMB_AUTO_DETECT:
+        raise ConnectionError(f"tidak dapat konek ke {target}:{SMB_PORT}")
+
+    # Gunakan hasil deteksi cache bila masih berlaku; jika tidak, scan ulang
+    # hanya bila cooldown sudah lewat (mencegah scan berulang tiap retry).
+    with _detect_lock:
+        cached = _resolved_ip["ip"]
+        cache_fresh = cached and (time.time() - _resolved_ip["at"]) < DETECT_CACHE_SEC
+    if cache_fresh and cached and cached != target:
+        detected = cached
+    elif not _should_rescan():
+        detected = _resolved_ip["ip"] or target
+    else:
+        print(f"[smb_sync] ⚠️ {target} tidak merespons — auto-detect XP "
+              f"({SMB_REMOTE_NAME})...", flush=True)
+        detected = auto_detect_host()
+        with _detect_lock:
+            _last_scan = time.time()
+            if detected:
+                _resolved_ip.update(ip=detected, at=time.time())
+
+    if detected and detected != target:
+        print(f"[smb_sync] 🎯 XP ditemukan di {detected} (berubah dari {target})",
+              flush=True)
+        conn2 = SMBConnection(SMB_USER, SMB_PASSWORD, SMB_MY_NAME,
+                              SMB_REMOTE_NAME, use_ntlm_v2=True, is_direct_tcp=True)
+        try:
+            if conn2.connect(detected, SMB_PORT, timeout=timeout):
+                return conn2
+        except Exception:
+            pass
+        try:
+            conn2.close()
+        except Exception:
+            pass
+    raise ConnectionError(f"tidak dapat konek ke {detected or target}:{SMB_PORT}")
 
 
 def is_media_file(name: str) -> bool:
@@ -718,8 +891,8 @@ def do_pass(state: dict) -> bool:
 # Runner kontinu
 # ---------------------------------------------------------------------------
 def run_forever() -> None:
-    print(f"[smb_sync] mulai. host={SMB_HOST} shares={SMB_SHARES} "
-          f"media={MEDIA_PATH} parallel={SMB_PARALLEL}", flush=True)
+    print(f"[smb_sync] mulai. host={get_smb_host()} (auto-detect={'ON' if SMB_AUTO_DETECT else 'OFF'}) "
+          f"shares={SMB_SHARES} media={MEDIA_PATH} parallel={SMB_PARALLEL}", flush=True)
     print(f"[smb_sync] ekstensi: {sorted(MEDIA_EXTS)}", flush=True)
     if SMB_WEBHOOK_URL:
         print("[smb_sync] notifikasi webhook: aktif", flush=True)

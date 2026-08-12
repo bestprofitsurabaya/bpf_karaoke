@@ -1,6 +1,6 @@
 # 🔐 Keamanan Share Karaoke Bank (SMB1 / Windows XP)
 
-Sinkronisasi dari komputer **Windows XP (192.168.1.108)** memakai protokol
+Sinkronisasi dari komputer **Windows XP (192.168.100.192)** memakai protokol
 **SMB1** (satu-satunya yang didukung XP) dan default-nya **guest** (tanpa
 kredensial) agar bisa langsung berjalan.
 
@@ -36,7 +36,23 @@ Sebagai ganti akses guest, buat akun terbatas di komputer XP:
 > Kredensial **tidak pernah keluar dari LAN** — hanya dipakai oleh container
 > `karaoke_sync` untuk menyalin file.
 
-## 2. Notifikasi saat sync selesai / error (webhook opsional)
+## 2. IP otomatis (auto-detect) — IP XP berubah-ubah
+
+Bila komputer XP memakai DHCP, IP-nya bisa berubah sewaktu-waktu. Sync
+mendukung **auto-detect**: jika `SMB_HOST` yang dikonfigurasi tidak merespons,
+sync otomatis mencari XP via NetBIOS (scan subnet `/24` + reverse query nama
+`SMB_REMOTE_NAME`, default `KARAOKE`) lalu lanjut sinkronisasi tanpa perlu
+mengubah `.env`.
+
+```env
+SMB_AUTO_DETECT=1   # aktif (default). 0 untuk menonaktifkan
+```
+
+> Catatan: pencarian otomatis hanya berlaku di subnet yang sama dengan
+> `SMB_HOST` (scan `/24`). Jika XP pindah ke subnet berbeda, perbarui
+> `SMB_HOST` di `.env`.
+
+## 3. Notifikasi saat sync selesai / error (webhook opsional)
 
 Bila ingin diberi tahu otomatis saat **semua lagu tersalin** atau ada **error**,
 isi `SMB_WEBHOOK_URL` di `.env` dengan webhook yang menerima POST JSON:
@@ -54,7 +70,7 @@ Payload yang dikirim berisi `text`, `content`, `status`, `done`,
 SMB_WEBHOOK_URL=https://discord.com/api/webhooks/xxxx/yyyy
 ```
 
-## 3. Cek status kapan saja
+## 4. Cek status kapan saja
 
 ```bash
 ./check_sync.sh
@@ -63,7 +79,7 @@ SMB_WEBHOOK_URL=https://discord.com/api/webhooks/xxxx/yyyy
 Menampilkan: fase sync, jumlah tersalin/terlihat, error, ruang disk,
 jumlah MP4 ter-transcode, lagu di database, dan antrian transcode.
 
-## 4. Operasional
+## 5. Operasional
 
 - **XP boleh mati** — sync berhenti, lalu **lanjut otomatis** (incremental)
   saat XP menyala kembali. Jangan hapus file di `media/lagu` selama proses.

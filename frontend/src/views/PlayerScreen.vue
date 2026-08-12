@@ -896,6 +896,21 @@ watch(sessionRemaining, (val, old) => {
   }
 })
 
+// Jaring pengaman: sesi ditutup server (event 'room_session' status completed)
+// namun event socket 'session_ended' bisa terlewat (TV reload / socket
+// reconnect / jam perangkat tidak sinkron dengan server sehingga penutupan
+// dipicu watchdog server lebih dulu). Begitu status sesi berubah jadi tidak
+// aktif -> siapkan layar 'Sesi Berakhir'. Jika masih ada lagu yang diputar,
+// biarkan selesai dulu (server kirim session_ended setelah lagu selesai).
+watch(() => store.roomSession?.active, (active, oldActive) => {
+  if (active === false && oldActive === true) {
+    sessionEnded.value = true
+    hideSessionWarning()
+  } else if (active === true) {
+    sessionEnded.value = false
+  }
+})
+
 onUnmounted(() => {
   clearTimeout(overlayTimer)
   clearInterval(countdownTimer)
