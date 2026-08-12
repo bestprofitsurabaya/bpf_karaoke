@@ -76,3 +76,8 @@ Desktop.ini
 backend/models/
 *.pkl
 *.joblib
+
+# Kredensial lokal (JANGAN di-commit)
+.env
+.env.*
+!.env.example
