@@ -42,13 +42,23 @@
         </div>
 
         <!-- SINKRONISASI BANK KARAOKE (Windows XP) -->
-        <div class="sync-card" :class="{ done: syncState?.done, error: syncState?.phase === 'error' }">
+        <div class="sync-card" :class="{ done: syncState?.done, error: syncState?.phase === 'error', paused: syncPaused }">
           <div class="sync-head">
             <h3>📥 Sinkronisasi Bank Karaoke <small>(Windows XP \\Karaoke)</small></h3>
-            <span class="sync-badge" :class="{ done: syncState?.done, err: syncState?.phase === 'error', live: syncState?.available && !syncState?.done }">
-              {{ syncState?.done ? '✅ SEMUA TERSALIN' : (syncState?.available ? '🔄 MENGIRIM...' : (syncState?.error ? '⚠️ ERROR' : '⏸ BELUM JALAN')) }}
-            </span>
+            <div class="sync-head-actions">
+              <span class="sync-badge" :class="{ done: syncState?.done, err: syncState?.phase === 'error', paused: syncPaused, live: !syncPaused && syncState?.available && !syncState?.done }">
+                <template v-if="syncState?.done">✅ SEMUA TERSALIN</template>
+                <template v-else-if="syncPaused">⏸ DI-JEDA</template>
+                <template v-else-if="syncState?.available && syncRunning">🔄 MENGIRIM...</template>
+                <template v-else-if="syncState?.available && !syncRunning">⏸ PROSES BERHENTI</template>
+                <template v-else-if="syncState?.error">⚠️ ERROR</template>
+                <template v-else>⏸ BELUM JALAN</template>
+              </span>
+              <button v-if="!syncPaused" class="btn-pipe pause" @click="triggerSyncPause" :disabled="syncBusy" :title="'Jeda proses pemindahan file dari XP (aman — lanjut dari titik henti)'">⏸ Pause</button>
+              <button v-else class="btn-pipe resume" @click="triggerSyncResume" :disabled="syncBusy" :title="'Lanjutkan proses pemindahan file dari XP (resume incremental)'">▶ Lanjut</button>
+            </div>
           </div>
+          <div v-if="syncBusyMsg" class="pipe-msg" :class="{ err: syncMsgErr }">{{ syncBusyMsg }}</div>
 
           <div v-if="syncState?.available" class="sync-body">
             <div class="progress-track">
@@ -515,7 +525,42 @@ async function deleteSelectedDedupe() {
 
 // Sinkronisasi Bank Karaoke
 const syncState = ref(null)
+const syncBusy = ref(false)
+const syncBusyMsg = ref('')
+const syncMsgErr = ref(false)
 let syncPollTimer = null
+
+const syncPaused = computed(() => !!(syncState.value?.paused))
+const syncRunning = computed(() => !!(syncState.value?.running))
+
+async function triggerSyncPause() {
+  syncBusy.value = true; syncBusyMsg.value = '⏸ Menjeda proses pemindahan file...'; syncMsgErr.value = false
+  try {
+    await axios.post('/api/admin/sync/pause')
+    syncBusyMsg.value = '✅ Sinkronisasi dijeda — lanjutkan kapan saja (▶ Lanjut)'
+    setTimeout(() => { if (!syncMsgErr.value) syncBusyMsg.value = '' }, 5000)
+    // Optimistic: badge langsung jadi DI-JEDA, refresh penuh di belakang
+    if (syncState.value) syncState.value.paused = true
+    fetchSyncStatus()
+  } catch (e) {
+    syncBusyMsg.value = '❌ ' + (e.response?.data?.detail || 'Gagal menjeda sinkronisasi'); syncMsgErr.value = true
+  }
+  syncBusy.value = false
+}
+
+async function triggerSyncResume() {
+  syncBusy.value = true; syncBusyMsg.value = '▶ Melanjutkan proses pemindahan file...'; syncMsgErr.value = false
+  try {
+    await axios.post('/api/admin/sync/resume')
+    syncBusyMsg.value = '✅ Sinkronisasi dilanjutkan — resume incremental dari titik henti'
+    setTimeout(() => { if (!syncMsgErr.value) syncBusyMsg.value = '' }, 5000)
+    if (syncState.value) syncState.value.paused = false
+    fetchSyncStatus()
+  } catch (e) {
+    syncBusyMsg.value = '❌ ' + (e.response?.data?.detail || 'Gagal melanjutkan sinkronisasi'); syncMsgErr.value = true
+  }
+  syncBusy.value = false
+}
 
 // ========== PIPELINE TRANSCODE ==========
 const pipeBusy = ref(false)
@@ -1049,6 +1094,7 @@ tr.selected { background: #eff6ff; }
 .sync-card { background: white; border-radius: 12px; padding: 1.25rem; border: 1px solid #f1f5f9; margin-bottom: 1rem; }
 .sync-card.done { border-color: #bbf7d0; background: #fafffc; }
 .sync-card.error { border-color: #fecaca; }
+.sync-card.paused { border-color: #fcd34d; background: #fffbeb; }
 .sync-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
 .sync-head h3 { font-size: 1rem; }
 .sync-head small { color: #94a3b8; font-weight: 400; }
@@ -1056,6 +1102,8 @@ tr.selected { background: #eff6ff; }
 .sync-badge.live { background: #eff6ff; color: #2563eb; animation: rtPulse 1.6s infinite; }
 .sync-badge.done { background: #f0fdf4; color: #16a34a; }
 .sync-badge.err { background: #fef2f2; color: #dc2626; }
+.sync-badge.paused { background: #fffbeb; color: #b45309; }
+.sync-head-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .sync-body { display: flex; flex-direction: column; gap: 0.5rem; }
 .progress-track { height: 10px; background: #f1f5f9; border-radius: 5px; overflow: hidden; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #2563eb); border-radius: 5px; transition: width 0.8s ease; }

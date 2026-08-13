@@ -209,6 +209,8 @@ services:
       MEDIA_PATH: /srv_media/lagu
       SYNC_STATE_PATH: /srv_media/sync_state.json
       TRANSCODED_PATH: /srv_media/transcoded
+      # Kontrol manual via panel admin (v2.7): flag pause & heartbeat di Redis
+      REDIS_URL: redis://karaoke_redis:6379/0
     volumes:
       - /srv/karaoke_media:/srv_media:rw
     restart: unless-stopped

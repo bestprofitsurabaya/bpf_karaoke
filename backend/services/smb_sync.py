@@ -64,6 +64,79 @@ SMB_PARALLEL = max(1, min(8, int(os.getenv("SMB_PARALLEL", "4"))))
 SMB_WEBHOOK_URL = os.getenv("SMB_WEBHOOK_URL", "").strip()
 MEDIA_PATH = Path(os.getenv("MEDIA_PATH", "/media/lagu"))
 SYNC_STATE_PATH = Path(os.getenv("SYNC_STATE_PATH", "/srv_media/sync_state.json"))
+
+# Kontrol manual via panel admin (v2.7): flag pause & heartbeat disimpan di Redis.
+# - PAUSE_KEY  : 'sync:paused' = 1 -> worker berhenti menyalin (tidur), state tetap
+#                 ditulis; file .part yang tertinggal aman (rename atomik).
+# - HEARTBEAT_KEY: timestamp terakhir worker aktif -> UI tahu proses hidup/mati.
+# Fail-open: bila Redis bermasalah, dianggap TIDAK pause (sync jalan normal).
+PAUSE_KEY = 'sync:paused'
+HEARTBEAT_KEY = 'sync:heartbeat'
+HEARTBEAT_SEC = 10        # tulis heartbeat tiap N detik saat proses berjalan
+PAUSE_POLL_SEC = 3        # cek flag pause tiap N detik saat sedang pause
+
+def _redis():
+    try:
+        import redis
+        return redis.from_url(
+            os.getenv("REDIS_URL", "redis://karaoke_redis:6379/0"),
+            socket_connect_timeout=3, socket_timeout=3)
+    except Exception:
+        return None
+
+def is_paused() -> bool:
+    """True bila panel admin sedang menjeda sync (fail-open: Redis error = jalan)."""
+    r = _redis()
+    if r is None:
+        return False
+    try:
+        return r.get(PAUSE_KEY) in (b"1", "1", b"true", "true")
+    except Exception:
+        return False
+    finally:
+        try: r.close()
+        except Exception: pass
+
+def set_paused(paused: bool) -> None:
+    """Set/hapus flag pause (dipakai task admin / helper test)."""
+    r = _redis()
+    if r is None:
+        return
+    try:
+        if paused:
+            r.set(PAUSE_KEY, "1")
+        else:
+            r.delete(PAUSE_KEY)
+    except Exception:
+        pass
+    finally:
+        try: r.close()
+        except Exception: pass
+
+def heartbeat() -> None:
+    """Tulis timestamp aktivitas worker (untuk deteksi proses hidup di UI)."""
+    r = _redis()
+    if r is None:
+        return
+    try:
+        r.set(HEARTBEAT_KEY, str(time.time()))
+    except Exception:
+        pass
+    finally:
+        try: r.close()
+        except Exception: pass
+
+def _wait_if_paused(state: dict) -> bool:
+    """Saat flag pause aktif: tulis state (dengan penanda paused) & tidur.
+    Mengembalikan True bila sekarang boleh lanjut (flag sudah di-resume)."""
+    while is_paused():
+        state["paused"] = True
+        state["phase"] = "paused"
+        save_state(state)
+        print("[smb_sync] ⏸ DI-JEDA dari panel admin — menunggu resume...", flush=True)
+        time.sleep(PAUSE_POLL_SEC)
+    state["paused"] = False
+    return True
 # Lokasi MP4 hasil transcode (di server: /srv_media/transcoded).
 # Dipakai untuk TIDAK menyalin ulang sumber yang sudah punya MP4 (lihat
 # transcoded_exists_for) — penting karena sumber .mpg/.mpeg sengaja dihapus
@@ -814,6 +887,11 @@ def do_pass(state: dict) -> bool:
     Satu pass penuh (paralel). Kembalikan True bila tidak ada yang perlu
     disalin dan tidak ada error (== semua sudah tersinkron).
     """
+    if is_paused():
+        # Panel admin menjeda sync — jangan mulai pass baru.
+        state["paused"] = True
+        save_state(state)
+        return False
     stats = SyncStats(state)
     with stats.lock:
         state["discovered_files"] = 0
@@ -906,6 +984,8 @@ def run_forever() -> None:
     _last_hang_clear = time.time()
     while True:
         try:
+            heartbeat()
+            _wait_if_paused(state)
             done_now = do_pass(state)
             state["passes"] += 1
             state["done"] = done_now

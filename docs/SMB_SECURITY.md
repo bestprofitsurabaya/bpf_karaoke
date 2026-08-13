@@ -79,7 +79,23 @@ SMB_WEBHOOK_URL=https://discord.com/api/webhooks/xxxx/yyyy
 Menampilkan: fase sync, jumlah tersalin/terlihat, error, ruang disk,
 jumlah MP4 ter-transcode, lagu di database, dan antrian transcode.
 
-## 5. Operasional
+## 5. Kontrol manual (start / pause)
+
+Proses pemindahan file dari XP bisa **dijeda & dilanjutkan** kapan saja
+tanpa kehilangan progres (setiap file disalin ke `.part` lalu di-rename
+atomik; progres disimpan ke `sync_state.json` tiap ±5 detik):
+
+```bash
+./sync_control.sh status   # status proses + progress
+./sync_control.sh start    # MULAI / lanjutkan (resume incremental)
+./sync_control.sh pause    # JEDA (SIGTERM aman, lanjut dari titik henti)
+```
+
+> Saat di-*pause*, proses berhenti bersih — file `.part` yang tertinggal
+> ditimpa saat lanjut, tidak ada file korup. `docker compose stop` dipakai
+> (bukan `pause` SIGSTOP) agar koneksi SMB ditutup rapi.
+
+## 6. Operasional
 
 - **XP boleh mati** — sync berhenti, lalu **lanjut otomatis** (incremental)
   saat XP menyala kembali. Jangan hapus file di `media/lagu` selama proses.

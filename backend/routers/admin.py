@@ -4,6 +4,7 @@ PT BESTPROFIT FUTURES SURABAYA
 """
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -92,6 +93,54 @@ def _set_paused_flag(paused: bool) -> None:
         r.close()
     except Exception:
         pass
+
+
+def _sync_paused() -> bool:
+    """Flag pause sync dari panel admin (Redis db 0). Fail-open: Redis bermasalah
+    = dianggap tidak pause (sync jalan normal)."""
+    try:
+        import redis
+        r = redis.from_url(
+            os.getenv("REDIS_URL", "redis://karaoke_redis:6379/0"),
+            socket_connect_timeout=3, socket_timeout=3)
+        v = r.get("sync:paused")
+        r.close()
+        return v in (b"1", "1", b"true", "true")
+    except Exception:
+        return False
+
+
+def _set_sync_paused(paused: bool) -> None:
+    """Set/hapus flag pause sync SINKRON (fail-fast) dari panel admin."""
+    try:
+        import redis
+        r = redis.from_url(
+            os.getenv("REDIS_URL", "redis://karaoke_redis:6379/0"),
+            socket_connect_timeout=3, socket_timeout=3)
+        if paused:
+            r.set("sync:paused", "1")
+        else:
+            r.delete("sync:paused")
+        r.close()
+    except Exception:
+        pass
+
+
+def _sync_heartbeat_age() -> Optional[float]:
+    """Umur heartbeat proses sync (detik) — None bila belum pernah / Redis error.
+    < 30 dtk = proses hidup; >= 30 dtk = proses mati (atau sedang jeda)."""
+    try:
+        import redis
+        r = redis.from_url(
+            os.getenv("REDIS_URL", "redis://karaoke_redis:6379/0"),
+            socket_connect_timeout=3, socket_timeout=3)
+        raw = r.get("sync:heartbeat")
+        r.close()
+        if not raw:
+            return None
+        return time.time() - float(raw)
+    except Exception:
+        return None
 
 
 def _redis_queues():
@@ -293,20 +342,47 @@ async def scan(path: Optional[str] = Query(None), db=Depends(get_db), _admin=Dep
 
 @router.get("/api/admin/sync/status")
 async def sync_status(_admin=Depends(get_admin_user)):
-    """Status sinkronisasi bank karaoke dari komputer Windows XP (admin only)."""
+    """Status sinkronisasi bank karaoke dari komputer Windows XP (admin only).
+    Menyertakan status kontrol manual: paused (flag Redis) & running (heartbeat)."""
     try:
         with open(SYNC_STATE_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         data["available"] = True
-        return data
     except FileNotFoundError:
-        return {
+        data = {
             "available": False,
             "message": "Sync belum berjalan / state file belum ada.",
             "done": False,
         }
     except Exception as e:
         return {"available": False, "error": str(e), "done": False}
+
+    data["paused"] = _sync_paused()
+    age = _sync_heartbeat_age()
+    data["running"] = age is not None and age < 30
+    data["heartbeat_age"] = age
+    return data
+
+
+@router.post("/api/admin/sync/pause")
+async def sync_pause(_admin=Depends(get_admin_user)):
+    """JEDA proses pemindahan file dari XP (panel admin).
+
+    Flag Redis di-set sinkron (fail-fast): worker smb_sync berhenti menyalin
+    di sela-sela file (file .part aman, state tetap tersimpan). Tidak perlu
+    menghentikan container — proses tetap hidup & siap lanjut kapan saja."""
+    _set_sync_paused(True)
+    return {"message": "Sinkronisasi dijeda (pause). Lanjutkan kapan saja."}
+
+
+@router.post("/api/admin/sync/resume")
+async def sync_resume(_admin=Depends(get_admin_user)):
+    """LANJUTKAN proses pemindahan file dari XP (panel admin).
+
+    Menghapus flag pause — worker smb_sync langsung melanjutkan pass berikutnya
+    secara incremental (tidak mengulang file yang sudah tersalin)."""
+    _set_sync_paused(False)
+    return {"message": "Sinkronisasi dilanjutkan (resume)."}
 
 
 @router.get("/api/admin/stats")
