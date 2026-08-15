@@ -1,7 +1,7 @@
 <template>
   <div class="player-app" @click="handleInteraction">
     <!-- DYNAMIC BACKGROUND -->
-    <div class="bg-layer">
+    <div class="bg-layer" :style="vibeStyle">
       <div class="bg-particles" ref="particlesRef">
         <span v-for="i in 20" :key="i" class="particle" :style="particleStyle(i)"></span>
       </div>
@@ -36,6 +36,9 @@
           <source :src="videoSrc" type="video/mp4">
         </video>
 
+        <!-- Vibe Mode: glow tepi sesuai genre (di atas video, di bawah overlay) -->
+        <div class="vibe-edge" v-if="store.currentSong?.genre"></div>
+
         <!-- Unmute Prompt -->
         <div class="unmute-prompt" v-if="isMuted" @click.stop="unmuteVideo">
           <div class="unmute-ring">
@@ -51,6 +54,7 @@
           <div class="np-badge">
             <span class="badge-dot"></span>
             NOW PLAYING
+            <span class="np-genre" v-if="store.currentSong?.genre">{{ vibeTheme.label }}</span>
             <span class="eq-bars" aria-hidden="true"><i v-for="n in 4" :key="n"></i></span>
           </div>
         </div>
@@ -165,6 +169,24 @@
             </div>
             <p class="room-url">{{ remoteUrl }}</p>
           </div>
+
+          <!-- Attract: AI Trending berputar saat ruangan kosong -->
+          <div class="trending-card" v-if="trending.length > 0">
+            <div class="trending-head">
+              <span>🔥 TRENDING DI BPF</span>
+              <span class="trending-ai">AI</span>
+            </div>
+            <transition name="trend-fade" mode="out-in">
+              <div class="trending-item" :key="trendingIdx">
+                <span class="trending-rank">#{{ trendingIdx + 1 }}</span>
+                <div class="trending-detail">
+                  <span class="trending-title">{{ trending[trendingIdx]?.title || '' }}</span>
+                  <span class="trending-artist">{{ trending[trendingIdx]?.artist || '' }}</span>
+                </div>
+                <span class="trending-flame">🔥</span>
+              </div>
+            </transition>
+          </div>
         </div>
       </div>
     </div>
@@ -251,11 +273,19 @@ const countdownSeconds = ref(5)
 const videoKey = ref(0)
 const userInteracted = ref(false)
 const isMuted = ref(true)
+// Mode KIOSK: PC kiosk ruangan TANPA sentuhan — lewati layar "Tap to Start",
+// aktifkan audio otomatis (diaktifkan via URL ?kiosk=1 di kiosk-main.sh).
+const kioskMode = new URLSearchParams(window.location.search).get('kiosk') === '1'
+if (kioskMode) userInteracted.value = true
 const showPlayOverlay = ref(false)
 const currentTime = ref('')
 const progressPct = ref(0)
 const volumeOsd = ref(false)
 const sessionEnded = ref(false)
+// Attract AI: trending songs berputar saat idle (layar QR)
+const trending = ref([])
+const trendingIdx = ref(0)
+let trendingTimer = null
 
 let overlayTimer, countdownTimer, clockTimer, volumeOsdTimer
 
@@ -332,6 +362,39 @@ const circumference2 = 2 * Math.PI * 52
 const videoSrc = computed(() => store.currentSong?.song_id ? `/api/media/stream/${store.currentSong.song_id}?key=${store.keyShift}` : '')
 const remoteUrl = computed(() => `${window.location.origin}/remote?room=${store.roomId}`)
 const countdownOffset2 = computed(() => circumference2 - (countdownSeconds.value / 5) * circumference2)
+
+// ============ VIBE MODE: background & badge bereaksi terhadap genre lagu ============
+const vibeThemes = {
+  'Pop Indonesia': { label: '🇮🇩 Pop', colors: ['#3b82f6', '#8b5cf6', '#ef4444'] },
+  'Dangdut': { label: '🎶 Dangdut', colors: ['#f59e0b', '#ef4444', '#7c2d12'] },
+  'Barat': { label: '🌍 Western', colors: ['#0ea5e9', '#6366f1', '#1e1b4b'] },
+  'K-Pop': { label: '🇰🇷 K-Pop', colors: ['#ec4899', '#8b5cf6', '#1e1b4b'] },
+  'Mandarin': { label: '🇨🇳 Mandarin', colors: ['#ef4444', '#f59e0b', '#7f1d1d'] },
+  'Rock': { label: '🎸 Rock', colors: ['#f43f5e', '#0f172a', '#7c3aed'] },
+  'Jazz': { label: '🎷 Jazz', colors: ['#f59e0b', '#78716c', '#292524'] },
+  'Religi': { label: '🕌 Religi', colors: ['#10b981', '#059669', '#064e3b'] },
+  'Anak': { label: '👶 Ceria', colors: ['#22d3ee', '#a3e635', '#f472b6'] },
+  'Country': { label: '🤠 Country', colors: ['#d97706', '#78350f', '#451a03'] },
+  'Reggae': { label: '🌴 Reggae', colors: ['#22c55e', '#eab308', '#065f46'] },
+}
+const vibeTheme = computed(() => {
+  const g = (store.currentSong?.genre || '').trim()
+  return vibeThemes[g] || { label: `♪ ${g || 'Music'}`, colors: ['#3b82f6', '#8b5cf6', '#ef4444'] }
+})
+function hexToRgba(hex, alpha) {
+  const h = (hex || '#000').replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r},${g},${b},${alpha})`
+}
+const vibeStyle = computed(() => {
+  const c = vibeTheme.value.colors
+  return {
+    '--vibe-1': hexToRgba(c[0], 0.5),
+    '--vibe-2': hexToRgba(c[1], 0.25),
+    '--vibe-3': c[2],
+    '--vibe-glow': hexToRgba(c[2], 0.22),
+  }
+})
 
 // Clock
 function updateClock() {
@@ -841,11 +904,31 @@ async function fetchSongDetail(songId) {
     if (song && store.currentSong) {
       store.currentSong.song_title = song.title
       store.currentSong.song_artist = song.artist || ''
+      store.currentSong.genre = song.genre || ''
       store.currentSong.file_format = song.file_format || ''
       store.currentSong.youtube_id = (song.file_format === 'youtube' && String(song.file_path || '').startsWith('yt:'))
         ? String(song.file_path).slice(3) : ''
     }
   } catch(e) {}
+}
+
+// ============ ATTRACT AI: trending songs (Top Hits) berputar saat idle ============
+async function loadTrending() {
+  try {
+    const res = await fetch('/api/ai/playlist/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'top_hits', count: 10 })
+    })
+    const data = await res.json()
+    trending.value = (data.songs || []).filter(s => s && s.id && s.title)
+    if (trending.value.length > 1) {
+      clearInterval(trendingTimer)
+      trendingTimer = setInterval(() => {
+        trendingIdx.value = (trendingIdx.value + 1) % trending.value.length
+      }, 6000)
+    }
+  } catch (e) { /* silent: attract tidak wajib */ }
 }
 
 // Reset progress bar saat berganti lagu (jalur mana pun: play event, fetchQueue)
@@ -874,6 +957,15 @@ onMounted(async () => {
   store.fetchQueue()
   store.fetchRoomSession()
   setupSocket()
+  
+  // Mode KIOSK: auto-init tanpa tap — QR/attract langsung tampil, AudioContext
+  // dibuat & di-resume, dan unmute video berjalan otomatis saat lagu diputar
+  // (kebijakan autoplay sudah dimatikan via flag --autoplay-policy
+  // no-user-gesture-required di autostart kiosk).
+  if (kioskMode) initPlayer()
+
+  // Attract AI: trending songs untuk layar idle
+  loadTrending()
   
   if (store.socket) {
     store.socket.emit('register', { type: 'player-screen', room_id: store.roomId })
@@ -918,6 +1010,7 @@ onUnmounted(() => {
   clearInterval(sessionTimer)
   clearTimeout(volumeOsdTimer)
   clearTimeout(sessionWarningTimer)
+  clearInterval(trendingTimer)
   stopProgressEmitter()
   destroyYtPlayer()
   try { if (mergerNode) mergerNode.disconnect() } catch (e) {}
@@ -950,13 +1043,14 @@ onUnmounted(() => {
 .bg-gradient {
   position: absolute;
   inset: 0;
-  background: radial-gradient(ellipse at center, rgba(15,15,25,0.6) 0%, rgba(6,6,8,0.95) 100%);
+  background: radial-gradient(ellipse at 30% 35%, var(--vibe-1, rgba(15,15,25,0.6)) 0%, rgba(6,6,8,0.72) 55%, rgba(6,6,8,0.96) 100%);
+  transition: background 2s ease;
 }
 
 .bg-pulse {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 50% 50%, rgba(239,68,68,0.05) 0%, transparent 70%);
+  background: radial-gradient(circle at 50% 50%, var(--vibe-2, rgba(239,68,68,0.05)) 0%, transparent 70%);
   animation: bgPulse 4s ease-in-out infinite;
 }
 
@@ -1143,13 +1237,25 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #000;
+  /* Vibe Mode: letterbox ikut bernuansa genre lagu (bukan hitam polos) */
+  background: radial-gradient(ellipse at 50% 30%, var(--vibe-1, rgba(0,0,0,0)) 0%, rgba(0,0,0,0.9) 78%);
+  transition: background 2s ease;
 }
 
 .video-element {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+/* Vibe Mode: glow tepi lembut mengikuti genre saat video diputar */
+.vibe-edge {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  box-shadow: inset 0 0 110px 18px var(--vibe-glow, rgba(0,0,0,0));
+  transition: box-shadow 2s ease;
 }
 
 /* YOUTUBE EMBED STAGE */
@@ -1252,6 +1358,17 @@ onUnmounted(() => {
   background: #ef4444;
   border-radius: 50%;
   animation: dotPulse 1.5s infinite;
+}
+
+.np-genre {
+  padding: 0.12rem 0.6rem;
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 1rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.85);
+  white-space: nowrap;
 }
 
 @keyframes dotPulse {
@@ -1716,6 +1833,85 @@ onUnmounted(() => {
   font-size: 0.7rem;
   word-break: break-all;
 }
+
+/* ATTRACT AI: trending card (layar idle) */
+.trending-card {
+  margin: 1.2rem auto 0;
+  width: 340px;
+  max-width: 90vw;
+  text-align: left;
+}
+.trending-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: rgba(255,255,255,0.55);
+}
+.trending-ai {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 1px;
+  padding: 0.1rem 0.45rem;
+  border-radius: 1rem;
+  color: #a5b4fc;
+  background: rgba(99,102,241,0.18);
+  border: 1px solid rgba(99,102,241,0.4);
+}
+.trending-item {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.55rem 0.8rem;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 0.9rem;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.3);
+}
+.trending-rank {
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: #f59e0b;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.2ch;
+}
+.trending-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.trending-title {
+  color: white;
+  font-size: 0.95rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trending-artist {
+  color: rgba(255,255,255,0.5);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trending-flame {
+  font-size: 1.1rem;
+  animation: flameFlicker 1.4s ease-in-out infinite;
+}
+@keyframes flameFlicker {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.2) rotate(-6deg); opacity: 0.85; }
+}
+.trend-fade-enter-active, .trend-fade-leave-active { transition: opacity 0.4s, transform 0.4s; }
+.trend-fade-enter-from { opacity: 0; transform: translateY(8px); }
+.trend-fade-leave-to { opacity: 0; transform: translateY(-8px); }
 
 /* PLAY FALLBACK */
 .play-fallback {

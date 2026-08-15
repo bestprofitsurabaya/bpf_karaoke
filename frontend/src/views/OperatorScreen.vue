@@ -191,6 +191,20 @@
           <button @click="setTab('history')" class="tab-btn" :class="{ active: activeTab === 'history' }" role="tab" :aria-selected="activeTab === 'history'">🕐 History</button>
         </div>
 
+        <!-- AI DJ: preset playlist satu-tap (generate + tambah ke antrian) -->
+        <div class="ai-dj-strip" v-if="activeTab === 'all'">
+          <span class="ai-dj-label">🤖 AI DJ</span>
+          <button v-for="pl in aiPlaylists" :key="pl.id"
+                  class="ai-dj-chip" :class="{ generating: aiGenerating === pl.id, done: aiDone === pl.id }"
+                  @click="aiDjGenerate(pl)" :disabled="aiGenerating !== null"
+                  :title="`Generate playlist ${pl.name} dan tambahkan ke antrian`">
+            <span class="ai-dj-icon">{{ pl.icon }}</span>
+            <span class="ai-dj-name">{{ pl.name }}</span>
+            <span class="ai-dj-spin" v-if="aiGenerating === pl.id">⏳</span>
+            <span class="ai-dj-check" v-else-if="aiDone === pl.id">✓</span>
+          </button>
+        </div>
+
         <!-- Filter + Sort Strip (hanya tab Semua Lagu) -->
         <div class="filter-strip" v-if="activeTab === 'all'">
           <button class="filter-chip" :class="{ active: store.selectedGenre === null }" @click="setFilter(null)">
@@ -629,6 +643,43 @@ async function batchAddToQueue() {
   } catch (e) { showToast('❌ Gagal menambah batch', 'error') }
 }
 
+// ========== AI DJ (preset playlist satu-tap) ==========
+const aiPlaylists = ref([])
+const aiGenerating = ref(null)
+const aiDone = ref(null)
+
+async function loadQuickPlaylists() {
+  try {
+    const res = await axios.get('/api/ai/playlist/quick')
+    aiPlaylists.value = res.data.playlists || []
+  } catch (e) { /* silent: AI DJ tidak tersedia */ }
+}
+
+async function aiDjGenerate(pl) {
+  if (aiGenerating.value) return
+  aiGenerating.value = pl.id
+  aiDone.value = null
+  try {
+    const gen = await axios.post('/api/ai/playlist/generate', { type: pl.type, value: pl.value, count: 15 })
+    const songs = (gen.data.songs || []).filter(s => s && s.id)
+    if (songs.length === 0) {
+      showToast(`🤖 "${pl.name}" tidak menemukan lagu`, 'warning')
+      return
+    }
+    const ids = songs.map(s => s.id)
+    const res = await axios.post(`/api/queue/batch?room_id=${encodeURIComponent(store.roomId)}`, ids)
+    const added = res.data.added ?? ids.length
+    showToast(`🤖 AI DJ "${pl.name}": ${added} lagu masuk antrian`, 'success')
+    aiDone.value = pl.id
+    store.fetchQueue()
+  } catch (e) {
+    showToast('🤖 Gagal generate playlist AI', 'error')
+  } finally {
+    aiGenerating.value = null
+    setTimeout(() => { if (aiDone.value === pl.id) aiDone.value = null }, 2500)
+  }
+}
+
 // ========== FAVORITES ==========
 async function toggleFavorite(song) {
   try {
@@ -798,7 +849,7 @@ onMounted(() => {
   store.setScreenType('operator')
   fetchSongs(); store.fetchGenres(); store.fetchQueue(); store.fetchStats(); store.fetchPipeline()
   store.fetchRoomSession()
-  fetchRooms(); fetchFavorites(); fetchHistory()
+  fetchRooms(); fetchFavorites(); fetchHistory(); loadQuickPlaylists()
   setupProgressListener()
   window.addEventListener('keydown', onWindowKeydown)
   sessionTimer = setInterval(() => { sessionNow.value = Date.now() }, 1000)
@@ -1055,6 +1106,20 @@ kbd {
 .tab-btn { padding: 0.5rem 0.85rem; background: transparent; border: none; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 0.75rem; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; transition: all 0.15s; }
 .tab-btn:hover { background: var(--surface-3); }
 .tab-btn.active { color: var(--red); font-weight: 700; border-bottom: 2px solid var(--red); }
+/* ===== AI DJ STRIP ===== */
+.ai-dj-strip { display: flex; align-items: center; gap: 0.3rem; padding: 0.4rem 1rem; background: linear-gradient(90deg, var(--surface), var(--surface-2)); border-bottom: 1px solid var(--border-soft); overflow-x: auto; }
+.ai-dj-label { font-size: 0.6rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted-2); flex-shrink: 0; margin-right: 0.2rem; }
+.ai-dj-chip { display: flex; align-items: center; gap: 0.35rem; padding: 0.38rem 0.7rem; background: var(--surface); border: 1px solid var(--border); border-radius: 2rem; cursor: pointer; font-size: 0.7rem; white-space: nowrap; flex-shrink: 0; transition: all 0.15s; }
+.ai-dj-chip:hover:not(:disabled) { border-color: var(--blue); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.ai-dj-chip:disabled { opacity: 0.6; cursor: wait; }
+.ai-dj-chip.generating { border-color: var(--blue); background: var(--blue-soft); }
+.ai-dj-chip.done { border-color: var(--green); background: rgba(16,185,129,0.1); }
+.ai-dj-icon { font-size: 0.8rem; }
+.ai-dj-name { font-weight: 500; color: var(--text); }
+.ai-dj-chip.done .ai-dj-name { color: var(--green); font-weight: 600; }
+.ai-dj-spin { color: var(--blue); display: inline-block; animation: spin 0.8s linear infinite; }
+.ai-dj-check { color: var(--green); font-weight: 700; }
+
 .filter-strip { display: flex; align-items: center; gap: 0.3rem; padding: 0.5rem 1rem; background: var(--surface); border-bottom: 1px solid var(--border-soft); overflow-x: auto; }
 .filter-chip { display: flex; align-items: center; gap: 0.25rem; padding: 0.4rem 0.6rem; background: var(--surface-3); border: 2px solid transparent; border-radius: 2rem; cursor: pointer; font-size: 0.7rem; white-space: nowrap; transition: all 0.15s; flex-shrink: 0; }
 .filter-chip:hover { border-color: var(--red-border); }

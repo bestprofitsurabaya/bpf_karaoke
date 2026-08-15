@@ -198,7 +198,7 @@ services:
     command: python -m services.smb_sync
     environment:
       TZ: Asia/Jakarta
-      SMB_HOST: ${SMB_HOST:-192.168.100.192}
+      SMB_HOST: ${SMB_HOST:-192.168.100.140}
       SMB_AUTO_DETECT: ${SMB_AUTO_DETECT:-1}
       SMB_PORT: ${SMB_PORT:-445}
       SMB_USER: ${SMB_USER:-}

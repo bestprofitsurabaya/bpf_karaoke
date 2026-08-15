@@ -14,7 +14,7 @@ server secara INCREMENTAL & RESUMABLE dengan beberapa koneksi SMB paralel:
 - Memonitor ruang disk /srv; memberi warning bila menipis.
 
 Config (env):
-  SMB_HOST          default 192.168.100.192 (IP terakhir dikenal)
+  SMB_HOST          default 192.168.100.140 (IP terakhir dikenal)
   SMB_AUTO_DETECT   default 1 (aktif) — bila SMB_HOST mati, cari otomatis via
                     NetBIOS: broadcast dulu, lalu scan subnet /24 + reverse
                     query nama SMB_REMOTE_NAME. Berguna saat IP XP berubah.
@@ -51,7 +51,7 @@ from smb.SMBConnection import SMBConnection
 SMB_HOST_ENV = os.getenv("SMB_HOST", "").strip()
 SMB_AUTO_DETECT = os.getenv("SMB_AUTO_DETECT", "1").lower() \
     in ("1", "true", "yes", "on")
-DEFAULT_SMB_HOST = os.getenv("SMB_DEFAULT_HOST", "192.168.100.192")
+DEFAULT_SMB_HOST = os.getenv("SMB_DEFAULT_HOST", "192.168.100.140")
 SMB_PORT = int(os.getenv("SMB_PORT", "445"))
 SMB_USER = os.getenv("SMB_USER", "")
 SMB_PASSWORD = os.getenv("SMB_PASSWORD", "")

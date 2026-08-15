@@ -1,6 +1,6 @@
 # 🔐 Keamanan Share Karaoke Bank (SMB1 / Windows XP)
 
-Sinkronisasi dari komputer **Windows XP (192.168.100.192)** memakai protokol
+Sinkronisasi dari komputer **Windows XP (192.168.100.140)** memakai protokol
 **SMB1** (satu-satunya yang didukung XP) dan default-nya **guest** (tanpa
 kredensial) agar bisa langsung berjalan.
 
