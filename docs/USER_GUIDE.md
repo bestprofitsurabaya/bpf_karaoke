@@ -111,8 +111,25 @@ URL: `https://host:8443/player?screen=2` (biasanya dibuka dari Operator via tomb
 - Kartu **"LAGU BERIKUTNYA"** — judul & artis lagu yang akan diputar setelah lagu sekarang selesai
 
 ### Layar Idle (Antrian Kosong / Welcome)
-- Logo animasi + tombol **"Tap to Start"** (wajib ketuk sekali untuk mengaktifkan audio)
+- Logo animasi + tombol **"Tap to Start"** (wajib ketuk sekali untuk mengaktifkan audio; pada kiosk mode `?kiosk=1`, audio aktif otomatis tanpa sentuhan)
 - Setelah itu tampil QR Code request lagu
+- **🔥 TRENDING DI BPF** — rekomendasi lagu terpopuler (AI) berputar otomatis tiap beberapa detik saat ruangan kosong
+
+### 🎨 Vibe Mode (Background Mengikuti Genre)
+Saat lagu diputar, suasana layar ikut berganti sesuai **genre** lagu:
+
+| Genre | Nuansa |
+|-------|--------|
+| 🇮🇩 Pop Indonesia | Biru |
+| 🎶 Dangdut | Oranye / merah |
+| 🇰🇷 K-Pop | Magenta |
+| 🎸 Rock | Merah gelap |
+| 🎷 Jazz | Kuning |
+| 🕌 Religi | Hijau |
+| 👶 Lagu Anak | Cyan |
+
+Ciri: gradien background, glow lembut di tepi layar, dan **badge genre** di
+overlay NOW PLAYING (mis. `[🇮🇩 Pop]`).
 
 ### Layar "Sesi Berakhir" 🎤
 - Muncul otomatis saat **durasi sesi room habis**: lagu yang sedang diputar **diselesaikan dulu sampai selesai**, lalu layar menampilkan **"Sesi Berakhir — Terima kasih telah bernyanyi!"**
@@ -157,11 +174,27 @@ URL: `https://host:8443/admin` (login admin; wajib ganti password saat pertama l
 | **Scanner Media** | Scan folder `media/lagu/` + auto genre |
 | **Pengguna** | Kelola operator & admin |
 
-### 🎤 Sesi Room (Durasi Pemakaian)
+### 🤖 AI DJ (Preset Playlist Satu-Tap)
+Di tab **Semua Lagu**, ada strip **"🤖 AI DJ"** berisi preset playlist siap pakai
+(🔥 Top Hits, 🎶 Dangdut Party, 🎉 Party Time, 💕 Romantic Night, 📻 Nostalgia
+90an, dan lainnya). Klik satu chip → sistem **generate playlist (15 lagu)**
+dan **langsung menambahkannya ke antrian** — cocok untuk menghidupkan ruangan
+tanpa harus mencari lagu satu per satu.
+
+---
+
+## 🎤 6. Sesi Room & Durasi Pemakaian
+
+### Mulai Sesi (dari Admin)
 - **Mulai Sesi**: pilih durasi (menit) **atau** waktu selesai absolut → room terhitung terpakai, timer tampil di Operator & Player
 - **Perpanjang**: tambah menit / ubah waktu selesai
 - **Akhiri**: sesi ditutup; lagu yang sedang diputar tetap diselesaikan lalu berhenti otomatis
 - Sesi **expired otomatis** bila waktu habis — perilaku berhenti yang sama (anti potong di tengah lagu)
+
+### Perilaku di Layar
+- **Operator**: bar sesi `ROOM TERPAKAI` + sisa waktu (berubah **merah berkedip** saat ≤ 5 menit)
+- **Player TV**: timer sisa waktu di atas tengah; saat habis muncul layar **"Sesi Berakhir — Terima kasih telah bernyanyi!"**
+- Saat admin **memulai sesi baru**, player kembali normal (QR + antrian)
 
 ---
 
@@ -178,10 +211,11 @@ Fitur mencari & memutar lagu **yang tidak tersedia offline** di database:
 
 ## 🔄 8. Pipeline Sync → Transcode
 
-Alur otomatis dari **share SMB (Windows XP)** → database → MP4 siap putar:
+Alur otomatis dari **sumber lagu** (share SMB mesin kiosk, atau HDD bank yang
+dipasang langsung di server) → database → MP4 siap putar:
 
 ```
-Share SMB (XP)  →  smb_sync (salin .part + rename)  →  scan media  →  transcode (Celery)  →  MP4 siap
+Sumber (SMB / HDD bank)  →  smb_sync (salin .part + rename)  →  scan media  →  transcode (Celery)  →  MP4 siap
 ```
 
 - **Monitor**: `./pipeline_monitor.sh` — ringkasan sync, transcode, antrian, disk

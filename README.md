@@ -2,10 +2,9 @@
 
 <div align="center">
 
-
 **Sistem Karaoke Modern dengan Dual-Screen, AI/ML, Celery Background Tasks & ISO 27001 Security**
 
-[Features](#-features) • [Architecture](#-architecture) • [Installation](#-installation) • [User Guide](#-user-guide) • [API Docs](#-api-documentation) • [Security](#-security)
+[Features](#-features) • [Architecture](#-architecture) • [Dokumentasi](#-dokumentasi)
 
 </div>
 
@@ -16,14 +15,7 @@
 - [Overview](#-overview)
 - [Features](#-features)
 - [Architecture](#-architecture)
-- [Tech Stack](#-tech-stack)
-- [Installation](#-installation)
-- [User Guide](#-user-guide)
-- [API Documentation](#-api-documentation)
-- [AI/ML Features](#-aiml-features)
-- [Security](#-security)
-- [Deployment](#-deployment)
-- [Troubleshooting](#-troubleshooting)
+- [Dokumentasi](#-dokumentasi)
 
 ---
 
@@ -125,6 +117,40 @@
 
 ## 🏗️ Architecture
 
+Sistem berjalan sebagai **stack Docker** di satu server NAS, dengan tiga layar
+terpisah (Operator touchscreen, Player TV, dan Remote HP) yang berkomunikasi
+secara real-time lewat WebSocket:
+
+```
+┌───────────────┐     HTTPS/WSS      ┌──────────────────────────────┐
+│  Operator      │ ◄───────────────► │  Nginx (8443, SSL)           │
+│  Player (TV)   │                   │  ├─ Frontend Vue 3 (SPA)     │
+│  Remote (HP)   │                   │  └─ API FastAPI (backend)    │
+└───────────────┘                    │     ├─ Socket.IO (realtime)  │
+       kiosk / browser               │     ├─ Celery (transcode,    │
+                                     │     │   AI genre, vocal)     │
+                                     │     ├─ Redis (antrian, cache)│
+                                     │     └─ PostgreSQL (database) │
+                                     └──────────────────────────────┘
+                                            ▲
+                                            │ SMB / local disk
+                                     ┌──────┴───────────┐
+                                     │ Media bank (lagu  │
+                                     │  & transcoded MP4)│
+                                     └──────────────────┘
+```
+
+Komponen inti:
+
+- **`backend/`** — FastAPI + Socket.IO: manajemen room, antrian, pemutaran,
+  sesi, media streaming, dan endpoint AI.
+- **`frontend/`** — Vue 3 (Vite): Operator, Player, Remote, dan Admin screens.
+- **`karaoke_sync`** — sinkronisasi lagu dari share SMB (atau HDD lokal bank)
+  ke folder media, disalin incremental + resume.
+- **`karaoke_celery*`** — task background: transcode video, deteksi genre AI,
+  vocal remove, dan laporan berkala.
+- **AI/ML** — model ter-train dari puluhan ribu lagu untuk mood, rekomendasi,
+  smart search, dan generator playlist (endpoint `/api/ai/*`).
 
 ## Dokumentasi
 

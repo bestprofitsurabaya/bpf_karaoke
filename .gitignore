@@ -81,3 +81,6 @@ backend/models/
 .env
 .env.*
 !.env.example
+
+# Catatan konversi berisi kredensial (server/kiosk/SSH) — jangan pernah commit
+docs/KONVERSI_KIOSK_NOTE.md

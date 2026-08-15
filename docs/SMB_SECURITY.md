@@ -1,8 +1,10 @@
-# 🔐 Keamanan Share Karaoke Bank (SMB1 / Windows XP)
+# 🔐 Keamanan Share Karaoke Bank (SMB1)
 
-Sinkronisasi dari komputer **Windows XP (192.168.100.140)** memakai protokol
-**SMB1** (satu-satunya yang didukung XP) dan default-nya **guest** (tanpa
-kredensial) agar bisa langsung berjalan.
+Sinkronisasi lagu dari mesin **kiosk karaoke (192.168.100.140 — Debian Linux,
+pengganti Windows XP)** memakai protokol **SMB1** dan default-nya **guest**
+(tanpa kredensial) agar bisa langsung berjalan. Bagian 1–3 di bawah tetap
+berlaku sebagai panduan bila ingin memperketat dengan akun khusus; sekarang
+XP sudah tidak ada, mesin kiosk menjalankan share Samba dengan cara serupa.
 
 > ⚠️ SMB1 secara desain tidak aman untuk internet — jangan pernah
 > membuka port 445/139 ke luar LAN. Sistem ini hanya berjalan di jaringan
@@ -12,9 +14,9 @@ kredensial) agar bisa langsung berjalan.
 
 Sebagai ganti akses guest, buat akun terbatas di komputer XP:
 
-1. Di Windows XP: **Control Panel → User Accounts → Buat akun baru**
+1. Di mesin sumber (dulu Windows XP, kini kiosk Linux / Samba): buat akun terbatas
    - Nama: `karaoke-sync`
-   - Tipe: **Terbatas (Limited)** — bukan Administrator
+   - Tipe: **bukan Administrator** — hanya hak baca share
    - Beri password kuat (contoh: `K4r4okeSync!2024`)
 2. Klik kanan folder share (**karaoke bank 1** dan **karaoke bank 2**) →
    **Sharing and Security** → beri hak **Read** (bukan Full Control) untuk
@@ -36,21 +38,21 @@ Sebagai ganti akses guest, buat akun terbatas di komputer XP:
 > Kredensial **tidak pernah keluar dari LAN** — hanya dipakai oleh container
 > `karaoke_sync` untuk menyalin file.
 
-## 2. IP otomatis (auto-detect) — IP XP berubah-ubah
+## 2. IP otomatis (auto-detect) — IP mesin sumber berubah-ubah
 
-Bila komputer XP memakai DHCP, IP-nya bisa berubah sewaktu-waktu. Sync
+Bila mesin sumber memakai DHCP, IP-nya bisa berubah sewaktu-waktu. Sync
 mendukung **auto-detect**: jika `SMB_HOST` yang dikonfigurasi tidak merespons,
-sync otomatis mencari XP via NetBIOS (scan subnet `/24` + reverse query nama
-`SMB_REMOTE_NAME`, default `KARAOKE`) lalu lanjut sinkronisasi tanpa perlu
-mengubah `.env`.
+sync otomatis mencari mesin sumber via NetBIOS (scan subnet `/24` + reverse
+query nama `SMB_REMOTE_NAME`, default `KARAOKE`) lalu lanjut sinkronisasi
+tanpa perlu mengubah `.env`.
 
 ```env
 SMB_AUTO_DETECT=1   # aktif (default). 0 untuk menonaktifkan
 ```
 
 > Catatan: pencarian otomatis hanya berlaku di subnet yang sama dengan
-> `SMB_HOST` (scan `/24`). Jika XP pindah ke subnet berbeda, perbarui
-> `SMB_HOST` di `.env`.
+> `SMB_HOST` (scan `/24`). Jika mesin sumber pindah ke subnet berbeda,
+> perbarui `SMB_HOST` di `.env`.
 
 ## 3. Notifikasi saat sync selesai / error (webhook opsional)
 
@@ -97,8 +99,9 @@ atomik; progres disimpan ke `sync_state.json` tiap ±5 detik):
 
 ## 6. Operasional
 
-- **XP boleh mati** — sync berhenti, lalu **lanjut otomatis** (incremental)
-  saat XP menyala kembali. Jangan hapus file di `media/lagu` selama proses.
+- **Mesin sumber boleh mati** — sync berhenti, lalu **lanjut otomatis**
+  (incremental) saat mesin menyala kembali. Jangan hapus file di
+  `media/lagu` selama proses.
 - **Sumber .mpg/.mpeg DIHAPUS otomatis setelah transcode sukses** — MP4 hasil
   transcode diverifikasi dulu (ffprobe) sebelum sumbernya dihapus. Sync tidak
   akan menyalin ulang file yang sudah punya MP4 (agar tidak loop salin-hapus).
@@ -107,8 +110,11 @@ atomik; progres disimpan ke `sync_state.json` tiap ±5 detik):
 - **Transcode tahan gagal** — file `.part` basi (>1 jam) dibersihkan otomatis
   dan task diantre ulang oleh scan tiap 10 menit; antrian dideduplikasi via
   Redis agar tidak membengkak saat XP baru menyala.
-- **Kecepatan**: paralel 4 koneksi SMB (env `SMB_PARALLEL`). Batas XP = 10
-  sesi SMB serentak; jangan set lebih dari 6.
+- **Kecepatan**: paralel 4 koneksi SMB (env `SMB_PARALLEL`). Batas mesin
+  sumber = 10 sesi SMB serentak; jangan set lebih dari 6.
+- **HDD bank di server**: bila bank karaoke dipasang langsung di server,
+  gunakan `./setup_karaoke_bank.sh` untuk mount NTFS (default read-only,
+  aman untuk data 2 TB) ke `/mnt/karaoke_bank1|2` — lihat README.
 - **Ruang disk**: total bank ±600–800 GB, tersimpan di `/srv` (1,7 TB).
   Dashboard admin menampilkan peringatan bila disk menipis.
 - **Penanda selesai**: `SYNC_COMPLETE.txt` di `/srv/karaoke_media/` + badge
